@@ -1,0 +1,3 @@
+fn add(x: int, y: float) -> int {
+    return x + y;
+}
