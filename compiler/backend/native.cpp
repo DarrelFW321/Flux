@@ -1,4 +1,5 @@
 #include "backend/native.hpp"
+#include <llvm/Config/llvm-config.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/MC/TargetRegistry.h>
 #include <llvm/Support/CodeGen.h>
@@ -20,18 +21,30 @@ void init_native_target() {
 }
 
 void emit_object_file(llvm::Module& module, const std::string& obj_path) {
-    llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
+    // setTargetTriple / createTargetMachine changed from StringRef → Triple in LLVM 20.
+    std::string triple_str = llvm::sys::getDefaultTargetTriple();
+
+#if LLVM_VERSION_MAJOR >= 20
+    llvm::Triple triple(triple_str);
     module.setTargetTriple(triple);
+#else
+    module.setTargetTriple(triple_str);
+#endif
 
     std::string err;
-    const auto* target = llvm::TargetRegistry::lookupTarget(triple.str(), err);
+    const auto* target = llvm::TargetRegistry::lookupTarget(triple_str, err);
     if (!target)
         throw std::runtime_error("LLVM target not found: " + err);
 
+#if LLVM_VERSION_MAJOR >= 20
     auto TM = std::unique_ptr<llvm::TargetMachine>(
-        target->createTargetMachine(triple, "generic", "",
-                                    llvm::TargetOptions{},
-                                    llvm::Reloc::PIC_));
+        target->createTargetMachine(llvm::Triple(triple_str), "generic", "",
+                                    llvm::TargetOptions{}, llvm::Reloc::PIC_));
+#else
+    auto TM = std::unique_ptr<llvm::TargetMachine>(
+        target->createTargetMachine(triple_str, "generic", "",
+                                    llvm::TargetOptions{}, llvm::Reloc::PIC_));
+#endif
     if (!TM)
         throw std::runtime_error("Could not create TargetMachine");
 
