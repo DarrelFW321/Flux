@@ -1,6 +1,12 @@
 #include "frontend/parser.hpp"
 #include <sstream>
 
+// GCC 13 fires a spurious -Wmaybe-uninitialized through std::variant's move
+// machinery when push_back reallocates. The warning is a false positive.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+
 Parser::Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

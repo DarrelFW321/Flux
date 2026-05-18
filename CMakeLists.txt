@@ -24,10 +24,9 @@ add_executable(flux
     compiler/backend/native.cpp
 )
 
-target_include_directories(flux PRIVATE
-    compiler
-    ${LLVM_INCLUDE_DIRS}
-)
+target_include_directories(flux PRIVATE compiler)
+# SYSTEM suppresses warnings from LLVM headers (they have many -Wunused-parameter hits).
+target_include_directories(flux SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 
 target_compile_definitions(flux PRIVATE ${LLVM_DEFINITIONS})
 
