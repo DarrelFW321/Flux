@@ -4,6 +4,10 @@ project(flux CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ── LLVM dependencies (must be found before LLVM so imported targets exist) ───
+find_package(ZLIB)
+find_package(zstd QUIET)
+
 # ── LLVM ──────────────────────────────────────────────────────────────────────
 set(LLVM_DIR "C:/msys2/mingw64/lib/cmake/llvm" CACHE PATH "LLVM CMake config dir")
 find_package(LLVM REQUIRED CONFIG)

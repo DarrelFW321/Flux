@@ -6,6 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build \
         llvm-dev clang lld \
+        zlib1g-dev libzstd-dev libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
