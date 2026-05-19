@@ -1,0 +1,52 @@
+name: Build WASM + Deploy Visualizer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed for peaceiris/actions-gh-pages
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Build WASM ──────────────────────────────────────────────────────────
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+
+      - name: Build flux_wasm.js + flux_wasm.wasm
+        run: |
+          emcmake cmake -S wasm/ -B build_wasm -DCMAKE_BUILD_TYPE=Release
+          cmake --build build_wasm --parallel
+          cp build_wasm/flux_wasm.js   frontend/public/
+          cp build_wasm/flux_wasm.wasm frontend/public/
+
+      # ── Build React app ─────────────────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        env:
+          VITE_BACKEND_URL: ${{ secrets.VITE_BACKEND_URL }}
+        run: npm run build
+
+      # ── Deploy to GitHub Pages ──────────────────────────────────────────────
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: frontend/dist
