@@ -66,7 +66,7 @@ export const EXAMPLES: FluxExample[] = [
   },
 ];
 
-export const DEFAULT_EXAMPLE_ID = 'optimizations';
+export const DEFAULT_EXAMPLE_ID = 'hello';
 
 export function getExampleById(id: string): FluxExample | undefined {
   return EXAMPLES.find(e => e.id === id);

@@ -7,6 +7,8 @@ import { diffLines } from 'diff';
 import { AstGraph } from './AstGraph';
 import { Sidebar, type SidebarView } from './components/Sidebar';
 import { DocsPane } from './components/DocsPane';
+import { InspectorNav } from './components/InspectorNav';
+import { WelcomeBanner } from './components/WelcomeBanner';
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, type FluxExample } from './data/examples';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -76,9 +78,8 @@ const defaultExample = EXAMPLES.find(e => e.id === DEFAULT_EXAMPLE_ID) ?? EXAMPL
 
 const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL ?? '';
 
-type InspectorGroup = 'pipeline' | 'run' | 'benchmark';
-
 const PIPELINE_TABS: Tab[] = ['tokens', 'ast', 'mir', 'ir'];
+const WELCOME_DISMISS_KEY = 'flux-welcome-dismissed';
 
 // react-json-tree theme tuned to match the minimal dark palette.
 const JSON_THEME = {
@@ -143,7 +144,10 @@ export default function App() {
   const [selectedExampleId, setSelectedExampleId] = useState(defaultExample.id);
   const [sidebarView, setSidebarView] = useState<SidebarView>('examples');
   const [activeDocId, setActiveDocId] = useState('overview');
-  const [inspectorGroup, setInspectorGroup] = useState<InspectorGroup>('pipeline');
+  const [lastPipelineTab, setLastPipelineTab] = useState<Tab>('tokens');
+  const [welcomeDismissed, setWelcomeDismissed] = useState(() => {
+    try { return localStorage.getItem(WELCOME_DISMISS_KEY) === '1'; } catch { return false; }
+  });
   const [result, setResult]           = useState<FrontendResult>({
     tokens: null, ast: null, mir_raw: null, mir_optimized: null,
     passes: null, pass_steps: null, error: null,
@@ -171,6 +175,11 @@ export default function App() {
       .then(m => { fluxRef.current = m; setWasmReady(true); })
       .catch(() => {/* WASM unavailable in local dev without a build */});
   }, []);
+
+  const dismissWelcome = () => {
+    setWelcomeDismissed(true);
+    try { localStorage.setItem(WELCOME_DISMISS_KEY, '1'); } catch { /* ignore */ }
+  };
 
   const runFrontend = useCallback((src: string) => {
     if (!fluxRef.current) return;
@@ -233,9 +242,7 @@ export default function App() {
   };
 
   const selectInspectorTab = (tab: Tab) => {
-    if (tab === 'output') setInspectorGroup('run');
-    else if (tab === 'benchmark') setInspectorGroup('benchmark');
-    else setInspectorGroup('pipeline');
+    if (PIPELINE_TABS.includes(tab)) setLastPipelineTab(tab);
     setActiveTab(tab);
   };
 
@@ -279,6 +286,10 @@ export default function App() {
           <span>{wasmReady ? 'wasm ready' : 'wasm loading'}</span>
         </div>
       </header>
+
+      {!welcomeDismissed && (
+        <WelcomeBanner onDismiss={dismissWelcome} />
+      )}
 
       <main className="workspace">
         <Sidebar
@@ -330,42 +341,11 @@ export default function App() {
         </section>
 
         <section className="pane inspector-pane">
-          <div className="inspector-chrome">
-            <div className="inspector-groups">
-              {([
-                ['pipeline', 'Pipeline', PIPELINE_TABS],
-                ['run', 'Run', ['output'] as Tab[]],
-                ['benchmark', 'Benchmark', ['benchmark'] as Tab[]],
-              ] as const).map(([group, label, tabs]) => (
-                <div key={group} className="inspector-group">
-                  <button
-                    type="button"
-                    className={`inspector-group-btn ${inspectorGroup === group ? 'active' : ''}`}
-                    onClick={() => {
-                      setInspectorGroup(group);
-                      if (!tabs.includes(activeTab)) setActiveTab(tabs[0]);
-                    }}
-                  >
-                    {label}
-                  </button>
-                  {inspectorGroup === group && (
-                    <div className="tab-bar tab-bar-sub">
-                      {tabs.map(t => (
-                        <button
-                          key={t}
-                          type="button"
-                          className={`tab-btn ${activeTab === t ? 'active' : ''}`}
-                          onClick={() => selectInspectorTab(t)}
-                        >
-                          {t}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
+          <InspectorNav
+            activeTab={activeTab}
+            lastPipelineTab={lastPipelineTab as 'tokens' | 'ast' | 'mir' | 'ir'}
+            onTabChange={selectInspectorTab}
+          />
 
           <div className="panel-body">
             {result.error && <div className="error-banner">{result.error}</div>}

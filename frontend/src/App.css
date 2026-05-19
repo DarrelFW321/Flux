@@ -144,6 +144,8 @@ button { font-family: inherit; }
 
 .inspector-pane {
   flex: 1;
+  min-width: 320px;
+  max-width: 50%;
   background: var(--bg-0);
 }
 
@@ -296,54 +298,156 @@ button { font-family: inherit; }
   border-radius: 3px;
 }
 
-/* ── Inspector chrome ────────────────────────────────────────────────────── */
-.inspector-chrome {
+/* ── Welcome banner ──────────────────────────────────────────────────────── */
+.welcome-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 20px 24px;
+  background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
+  border-bottom: 1px solid var(--border-1);
+  flex-shrink: 0;
+}
+
+.welcome-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.welcome-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+}
+
+.welcome-lead {
+  color: var(--text-1);
+  font-size: 13.5px;
+  line-height: 1.6;
+  max-width: 720px;
+  margin-bottom: 14px;
+}
+.welcome-lead strong { color: var(--text-0); font-weight: 500; }
+.welcome-lead code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 1px 5px;
+  background: var(--bg-2);
+  border-radius: 3px;
+}
+
+.welcome-steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px 20px;
+}
+
+.welcome-steps li {
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.welcome-step-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-0);
+  margin-bottom: 2px;
+}
+
+.welcome-dismiss {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.welcome-dismiss:hover {
+  color: var(--text-0);
+  border-color: var(--text-3);
+}
+
+/* ── Inspector navigation ────────────────────────────────────────────────── */
+.inspector-nav {
   flex-shrink: 0;
   border-bottom: 1px solid var(--border-1);
   background: var(--bg-1);
 }
 
-.inspector-groups {
+.inspector-modes {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0 4px;
-  padding: 8px 8px 0;
+  width: 100%;
+  padding: 8px 10px 0;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-1);
 }
 
-.inspector-group {
-  display: flex;
-  flex-direction: column;
-  margin-right: 8px;
-}
-
-.inspector-group-btn {
-  padding: 8px 12px;
+.inspector-mode-btn {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
   border: none;
+  border-radius: 6px 6px 0 0;
   background: transparent;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   cursor: pointer;
-  border-radius: 5px 5px 0 0;
+  transition: color 0.15s, background 0.15s;
 }
-.inspector-group-btn:hover { color: var(--text-1); }
-.inspector-group-btn.active {
+.inspector-mode-btn:hover {
+  color: var(--text-1);
+  background: var(--bg-2);
+}
+.inspector-mode-btn.active {
   color: var(--text-0);
   background: var(--bg-0);
+  box-shadow: inset 0 -1px 0 var(--bg-0);
 }
 
-.tab-bar-sub {
+.inspector-subtabs {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 2px;
+  padding: 6px 10px;
   background: var(--bg-0);
-  padding: 0 4px;
-  border-top: 1px solid var(--border-1);
+}
+.inspector-subtabs::-webkit-scrollbar { height: 4px; }
+
+.inspector-subtab {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.inspector-subtab:hover { color: var(--text-1); background: var(--bg-2); }
+.inspector-subtab.active {
+  color: var(--text-0);
+  background: var(--bg-2);
 }
 
-.tab-bar-sub .tab-btn {
-  padding: 10px 12px;
-  font-size: 11.5px;
+.inspector-hint {
+  margin: 0;
+  padding: 10px 14px 12px;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.45;
+  background: var(--bg-0);
 }
 
 /* ── Tab bar ─────────────────────────────────────────────────────────────── */

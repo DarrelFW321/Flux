@@ -8,12 +8,12 @@ This document matches what the compiler accepts today (v0.1).
 
 ## Types
 
-| Type | Example | Notes |
-|------|---------|--------|
-| `int` | `42` | 32-bit signed integer |
-| `float` | `3.14` | 64-bit IEEE float (`double` in LLVM) |
-| `bool` | `true`, `false` | |
-| `T[N]` | `float[4]` | Fixed-size array; `N` must be a compile-time size |
+| Type    | Example         | Notes                                             |
+| ------- | --------------- | ------------------------------------------------- |
+| `int`   | `42`            | 32-bit signed integer                             |
+| `float` | `3.14`          | 64-bit IEEE float (`double` in LLVM)              |
+| `bool`  | `true`, `false` |                                                   |
+| `T[N]`  | `float[4]`      | Fixed-size array; `N` must be a compile-time size |
 
 Arrays are value types backed by stack storage. There is no heap allocation or dynamic sizing yet.
 
@@ -117,11 +117,11 @@ let b: float[4] = a;
 
 ## Built-in functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `print` | `print(value)` | Prints one value (int, float, bool, or array) followed by newline |
-| `sum` | `sum(arr) -> scalar` | Sum of all elements |
-| `dot` | `dot(a, b) -> scalar` | Dot product of two arrays of the same type and length |
+| Function | Signature             | Description                                                       |
+| -------- | --------------------- | ----------------------------------------------------------------- |
+| `print`  | `print(value)`        | Prints one value (int, float, bool, or array) followed by newline |
+| `sum`    | `sum(arr) -> scalar`  | Sum of all elements                                               |
+| `dot`    | `dot(a, b) -> scalar` | Dot product of two arrays of the same type and length             |
 
 ```flux
 let s: float = sum(v);
@@ -144,10 +144,10 @@ There is no `len()`, `malloc`, or I/O beyond `print`.
 
 Source is lowered in this order:
 
-1. **Lexer / parser** → AST  
-2. **Type checker** → typed AST  
-3. **FluxIR (MIR)** → mid-level IR with whole-array ops  
-4. **Optimization passes** → constant folding, algebraic simplification, loop fusion, DCE  
+1. **Lexer / parser** → AST
+2. **Type checker** → typed AST
+3. **FluxIR (MIR)** → mid-level IR with whole-array ops
+4. **Optimization passes** → constant folding, algebraic simplification, loop fusion, DCE
 5. **LLVM IR** → native binary (`flux --compile file.fl -o out`)
 
 Use the visualizer’s **MIR** tab to see optimization (including `fused.loop` for fused array expressions).
@@ -160,6 +160,6 @@ Use the visualizer’s **MIR** tab to see optimization (including `fused.loop` f
 - No modules, imports, or structs
 - No `for` loops (use `while`)
 - No user-defined generics or operator overloading
-- Benchmarks and kernels only — not a full ML framework
+- Benchmarks and kernels only. Not a full ML framework
 
 For building the compiler locally, see [BUILD.md](./BUILD.md).
