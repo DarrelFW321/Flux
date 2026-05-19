@@ -1,7 +1,5 @@
-type PipelineTab = 'tokens' | 'ast' | 'mir' | 'ir';
-type InspectorTab = PipelineTab | 'output' | 'benchmark';
-
-export type InspectorMode = 'pipeline' | 'run' | 'benchmark';
+export type PipelineTab = 'tokens' | 'ast' | 'mir' | 'ir';
+export type InspectorTab = PipelineTab | 'output';
 
 const PIPELINE_TABS: { id: PipelineTab; label: string }[] = [
   { id: 'tokens', label: 'Tokens' },
@@ -10,16 +8,13 @@ const PIPELINE_TABS: { id: PipelineTab; label: string }[] = [
   { id: 'ir',     label: 'IR' },
 ];
 
-const MODES: { id: InspectorMode; label: string; tab: InspectorTab }[] = [
-  { id: 'pipeline',  label: 'Pipeline',  tab: 'tokens' },
-  { id: 'run',       label: 'Run',       tab: 'output' },
-  { id: 'benchmark', label: 'Benchmark', tab: 'benchmark' },
+const MODES: { id: 'pipeline' | 'run'; label: string; tab: InspectorTab }[] = [
+  { id: 'pipeline', label: 'Pipeline', tab: 'tokens' },
+  { id: 'run',      label: 'Run',      tab: 'output' },
 ];
 
-export function tabToMode(tab: InspectorTab): InspectorMode {
-  if (tab === 'output') return 'run';
-  if (tab === 'benchmark') return 'benchmark';
-  return 'pipeline';
+function tabToMode(tab: InspectorTab): 'pipeline' | 'run' {
+  return tab === 'output' ? 'run' : 'pipeline';
 }
 
 interface InspectorNavProps {
@@ -45,7 +40,7 @@ export function InspectorNav({ activeTab, lastPipelineTab, onTabChange }: Inspec
               if (m.id === 'pipeline') {
                 onTabChange(mode === 'pipeline' ? activeTab : lastPipelineTab);
               } else {
-                onTabChange(m.tab);
+                onTabChange('output');
               }
             }}
           >
@@ -73,13 +68,8 @@ export function InspectorNav({ activeTab, lastPipelineTab, onTabChange }: Inspec
 
       {mode === 'run' && (
         <p className="inspector-hint">
-          Compile and execute on the server. First request after idle may take ~30s.
-        </p>
-      )}
-
-      {mode === 'benchmark' && (
-        <p className="inspector-hint">
-          Compare Flux, hand-written C, and NumPy on the same kernels.
+          Compile and run the code in the editor on the server. First request after idle
+          may take ~30s.
         </p>
       )}
     </header>

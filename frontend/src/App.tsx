@@ -8,6 +8,7 @@ import { AstGraph } from './AstGraph';
 import { Sidebar, type SidebarView } from './components/Sidebar';
 import { DocsPane } from './components/DocsPane';
 import { InspectorNav } from './components/InspectorNav';
+import { BenchmarksPage, type BenchmarkReport } from './components/BenchmarksPage';
 import { WelcomeBanner } from './components/WelcomeBanner';
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, type FluxExample } from './data/examples';
 
@@ -42,33 +43,8 @@ interface FrontendResult {
   error: string | null;
 }
 
-interface BenchmarkRow {
-  name: string;
-  time_ms: number | null;
-  output: string | null;
-  error: string | null;
-}
-
-interface BenchmarkSources {
-  flux: string;
-  c: string;
-  numpy: string;
-}
-
-interface KernelReport {
-  kernel: string;
-  description: string;
-  sources?: BenchmarkSources;
-  results: BenchmarkRow[];
-  error: string | null;
-}
-
-interface BenchmarkReport {
-  kernels: KernelReport[];
-  error: string | null;
-}
-
-type Tab = 'tokens' | 'ast' | 'mir' | 'ir' | 'output' | 'benchmark';
+type Tab = 'tokens' | 'ast' | 'mir' | 'ir' | 'output';
+type AppPage = 'playground' | 'benchmarks';
 type AstView = 'graph' | 'json';
 type MirView = 'optimized' | 'raw' | 'diff';
 
@@ -145,6 +121,7 @@ export default function App() {
   const [sidebarView, setSidebarView] = useState<SidebarView>('examples');
   const [activeDocId, setActiveDocId] = useState('overview');
   const [lastPipelineTab, setLastPipelineTab] = useState<Tab>('tokens');
+  const [appPage, setAppPage]             = useState<AppPage>('playground');
   const [welcomeDismissed, setWelcomeDismissed] = useState(() => {
     try { return localStorage.getItem(WELCOME_DISMISS_KEY) === '1'; } catch { return false; }
   });
@@ -273,14 +250,32 @@ export default function App() {
           <span className="brand-sep">/</span>
           <span className="brand-sub">compiler visualizer</span>
         </div>
-        <nav className="header-nav">
-          <button type="button" className="header-link" onClick={() => setSidebarView('examples')}>
-            Examples
+        <nav className="header-pages" aria-label="Main sections">
+          <button
+            type="button"
+            className={`header-page-btn ${appPage === 'playground' ? 'active' : ''}`}
+            onClick={() => setAppPage('playground')}
+          >
+            Playground
           </button>
-          <button type="button" className="header-link" onClick={() => setSidebarView('docs')}>
-            Docs
+          <button
+            type="button"
+            className={`header-page-btn ${appPage === 'benchmarks' ? 'active' : ''}`}
+            onClick={() => setAppPage('benchmarks')}
+          >
+            Benchmarks
           </button>
         </nav>
+        {appPage === 'playground' && (
+          <nav className="header-nav">
+            <button type="button" className="header-link" onClick={() => setSidebarView('examples')}>
+              Examples
+            </button>
+            <button type="button" className="header-link" onClick={() => setSidebarView('docs')}>
+              Docs
+            </button>
+          </nav>
+        )}
         <div className="header-meta">
           <span className={`status-dot ${wasmReady ? 'ok' : 'warn'}`} aria-hidden />
           <span>{wasmReady ? 'wasm ready' : 'wasm loading'}</span>
@@ -288,9 +283,23 @@ export default function App() {
       </header>
 
       {!welcomeDismissed && (
-        <WelcomeBanner onDismiss={dismissWelcome} />
+        <WelcomeBanner
+          onDismiss={dismissWelcome}
+          onGoPlayground={() => { setAppPage('playground'); dismissWelcome(); }}
+          onGoBenchmarks={() => { setAppPage('benchmarks'); dismissWelcome(); }}
+        />
       )}
 
+      {appPage === 'benchmarks' ? (
+        <main className="benchmarks-workspace">
+          <BenchmarksPage
+            report={bench}
+            loading={benchLoading}
+            error={benchError}
+            onRun={runBenchmark}
+          />
+        </main>
+      ) : (
       <main className="workspace">
         <Sidebar
           view={sidebarView}
@@ -501,18 +510,10 @@ export default function App() {
               </div>
             )}
 
-            {/* ── Benchmark ── */}
-            {activeTab === 'benchmark' && (
-              <BenchmarkPane
-                report={bench}
-                loading={benchLoading}
-                error={benchError}
-                onRun={runBenchmark}
-              />
-            )}
           </div>
         </section>
       </main>
+      )}
     </div>
   );
 }
@@ -724,171 +725,6 @@ function DiffBody({ before, after }: { before: string; after: string }) {
           ));
         })}
       </pre>
-    </div>
-  );
-}
-
-// ── Benchmark pane ──────────────────────────────────────────────────────────
-
-interface BenchmarkPaneProps {
-  report:  BenchmarkReport | null;
-  loading: boolean;
-  error:   string;
-  onRun:   () => void;
-}
-
-function BenchmarkPane({ report, loading, error, onRun }: BenchmarkPaneProps) {
-  return (
-    <div className="action-pane">
-      <div className="action-bar">
-        <button className="action-btn" onClick={onRun} disabled={loading}>
-          {loading ? 'Running…' : 'Run benchmarks'}
-        </button>
-        {report && (
-          <span className="bench-meta dim">
-            Flux vs hand-written C (gcc -O2) vs NumPy · {report.kernels.length} kernel
-            {report.kernels.length === 1 ? '' : 's'}
-          </span>
-        )}
-      </div>
-
-      {loading && (
-        <div className="notice">
-          <span className="spinner" /> Compiling and running every kernel in
-          three implementations. Cold starts can add ~30s; subsequent runs are
-          instant.
-        </div>
-      )}
-
-      {error && <div className="error-banner">{error}</div>}
-
-      {report && !loading && (
-        <div className="scroll-area">
-          {report.kernels.map(k => <KernelTable key={k.kernel} report={k} />)}
-          <p className="bench-footnote">
-            Lower is better. Bar shows speed relative to the fastest
-            implementation for each kernel — longer bar = faster. The
-            <code>output</code> column is the kernel's printed result;
-            matching values across rows means the three implementations
-            agree numerically.
-          </p>
-        </div>
-      )}
-
-      {!report && !loading && !error && (
-        <Placeholder>
-          Compare Flux against hand-written C and NumPy across four kernels:
-          dot product, saxpy, ReLU activation, and a bigger dot product.
-          <br />
-          <span className="dim">
-            Each implementation runs in its own process; timing is end-to-end
-            wall clock.
-          </span>
-        </Placeholder>
-      )}
-    </div>
-  );
-}
-
-interface KernelTableProps {
-  report: KernelReport;
-}
-
-type BenchSourceLang = 'flux' | 'c' | 'numpy';
-
-function KernelTable({ report }: KernelTableProps) {
-  const [showSources, setShowSources] = useState(false);
-  const [sourceLang, setSourceLang] = useState<BenchSourceLang>('flux');
-
-  const fastestMs = useMemo(() => {
-    const valid = report.results
-      .map(r => r.time_ms)
-      .filter((t): t is number => typeof t === 'number');
-    return valid.length ? Math.min(...valid) : null;
-  }, [report]);
-
-  const sourceText = report.sources?.[sourceLang] ?? '';
-
-  return (
-    <div className="kernel-block">
-      <header className="kernel-header">
-        <span className="kernel-title">{report.kernel}</span>
-        <span className="kernel-desc">{report.description}</span>
-        {report.sources && (
-          <button
-            type="button"
-            className="kernel-source-toggle"
-            onClick={() => setShowSources(s => !s)}
-          >
-            {showSources ? 'Hide source' : 'View source'}
-          </button>
-        )}
-      </header>
-
-      {showSources && report.sources && (
-        <div className="kernel-sources">
-          <div className="kernel-source-tabs">
-            {(['flux', 'c', 'numpy'] as BenchSourceLang[]).map(lang => (
-              <button
-                key={lang}
-                type="button"
-                className={`subtab-btn ${sourceLang === lang ? 'active' : ''}`}
-                onClick={() => setSourceLang(lang)}
-              >
-                {lang === 'flux' ? 'Flux' : lang === 'c' ? 'C' : 'NumPy'}
-              </button>
-            ))}
-          </div>
-          <pre className="kernel-source-code"><code>{sourceText}</code></pre>
-        </div>
-      )}
-
-      <table className="bench-table">
-        <thead>
-          <tr>
-            <th>Implementation</th>
-            <th className="num">Time</th>
-            <th className="num">Relative</th>
-            <th>Speed</th>
-            <th>Output</th>
-          </tr>
-        </thead>
-        <tbody>
-          {report.results.map(row => {
-            const ok       = typeof row.time_ms === 'number';
-            const relative = ok && fastestMs != null ? row.time_ms! / fastestMs : null;
-            const width    = ok && fastestMs != null
-              ? Math.max(2, (fastestMs / row.time_ms!) * 100)
-              : 0;
-            return (
-              <tr key={row.name}>
-                <td className="bench-name">{row.name}</td>
-                <td className="num">{ok ? `${row.time_ms!.toFixed(1)} ms` : '—'}</td>
-                <td className="num">
-                  {relative != null
-                    ? (relative === 1 ? '1.00×' : `${relative.toFixed(2)}×`)
-                    : '—'}
-                </td>
-                <td className="bench-bar-cell">
-                  {ok && (
-                    <div className="bench-bar-track">
-                      <div
-                        className={`bench-bar ${relative === 1 ? 'best' : ''}`}
-                        style={{ width: `${width}%` }}
-                      />
-                    </div>
-                  )}
-                </td>
-                <td className="bench-output" title={row.output ?? row.error ?? ''}>
-                  {row.error
-                    ? <span className="bench-err">error: {row.error}</span>
-                    : <code>{row.output}</code>}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
     </div>
   );
 }
