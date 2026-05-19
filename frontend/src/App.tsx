@@ -37,7 +37,21 @@ interface FrontendResult {
   error: string | null;
 }
 
-type Tab = 'tokens' | 'ast' | 'mir' | 'ir' | 'output';
+interface BenchmarkRow {
+  name: string;
+  time_ms: number | null;
+  output: string | null;
+  error: string | null;
+}
+
+interface BenchmarkReport {
+  kernel: string;
+  description: string;
+  results: BenchmarkRow[];
+  error: string | null;
+}
+
+type Tab = 'tokens' | 'ast' | 'mir' | 'ir' | 'output' | 'benchmark';
 type AstView = 'graph' | 'json';
 type MirView = 'optimized' | 'raw' | 'diff';
 
@@ -135,6 +149,9 @@ export default function App() {
   const [runLoading, setRunLoading]   = useState(false);
   const [runError, setRunError]       = useState('');
   const [wasmReady, setWasmReady]     = useState(false);
+  const [bench, setBench]             = useState<BenchmarkReport | null>(null);
+  const [benchLoading, setBenchLoading] = useState(false);
+  const [benchError, setBenchError]   = useState('');
 
   const fluxRef  = useRef<FluxWasm | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout>>();
@@ -182,6 +199,21 @@ export default function App() {
       setRunError('Could not reach the backend.');
     } finally {
       setRunLoading(false);
+    }
+  };
+
+  const runBenchmark = async () => {
+    if (!BACKEND_URL) { setBenchError('VITE_BACKEND_URL is not set.'); return; }
+    setBenchLoading(true); setBenchError(''); setBench(null);
+    try {
+      const res  = await fetch(`${BACKEND_URL}/benchmark`, { method: 'POST' });
+      const data = await res.json() as BenchmarkReport;
+      if (data.error) setBenchError(data.error);
+      else            setBench(data);
+    } catch {
+      setBenchError('Could not reach the backend.');
+    } finally {
+      setBenchLoading(false);
     }
   };
 
@@ -251,7 +283,7 @@ export default function App() {
         {/* ── Output panel ──────────────────────────────────────────────── */}
         <section className="pane output-pane">
           <div className="tab-bar">
-            {(['tokens', 'ast', 'mir', 'ir', 'output'] as Tab[]).map(t => (
+            {(['tokens', 'ast', 'mir', 'ir', 'output', 'benchmark'] as Tab[]).map(t => (
               <button
                 key={t}
                 className={`tab-btn ${activeTab === t ? 'active' : ''}`}
@@ -414,6 +446,16 @@ export default function App() {
                   <Placeholder>Run to compile and execute on the backend.</Placeholder>
                 )}
               </div>
+            )}
+
+            {/* ── Benchmark ── */}
+            {activeTab === 'benchmark' && (
+              <BenchmarkPane
+                report={bench}
+                loading={benchLoading}
+                error={benchError}
+                onRun={runBenchmark}
+              />
             )}
           </div>
         </section>
@@ -629,6 +671,115 @@ function DiffBody({ before, after }: { before: string; after: string }) {
           ));
         })}
       </pre>
+    </div>
+  );
+}
+
+// ── Benchmark pane ──────────────────────────────────────────────────────────
+
+interface BenchmarkPaneProps {
+  report:  BenchmarkReport | null;
+  loading: boolean;
+  error:   string;
+  onRun:   () => void;
+}
+
+function BenchmarkPane({ report, loading, error, onRun }: BenchmarkPaneProps) {
+  // Find the fastest valid time so we can render relative-speed bars.
+  const fastestMs = useMemo(() => {
+    if (!report) return null;
+    const valid = report.results
+      .map(r => r.time_ms)
+      .filter((t): t is number => typeof t === 'number');
+    return valid.length ? Math.min(...valid) : null;
+  }, [report]);
+
+  return (
+    <div className="action-pane">
+      <div className="action-bar">
+        <button className="action-btn" onClick={onRun} disabled={loading}>
+          {loading ? 'Running…' : 'Run benchmark'}
+        </button>
+        {report && (
+          <span className="bench-meta dim">
+            {report.kernel} · {report.description}
+          </span>
+        )}
+      </div>
+
+      {loading && (
+        <div className="notice">
+          <span className="spinner" /> Compiling and running three implementations.
+          Cold starts can add ~30s; subsequent runs are instant.
+        </div>
+      )}
+
+      {error && <div className="error-banner">{error}</div>}
+
+      {report && !loading && fastestMs != null && (
+        <div className="scroll-area">
+          <table className="bench-table">
+            <thead>
+              <tr>
+                <th>Implementation</th>
+                <th className="num">Time</th>
+                <th className="num">Relative</th>
+                <th>Speed</th>
+                <th>Output</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.results.map(row => {
+                const ok       = typeof row.time_ms === 'number';
+                const relative = ok ? row.time_ms! / fastestMs : null;
+                const width    = ok ? Math.max(2, (fastestMs / row.time_ms!) * 100) : 0;
+                return (
+                  <tr key={row.name}>
+                    <td className="bench-name">{row.name}</td>
+                    <td className="num">{ok ? `${row.time_ms!.toFixed(1)} ms` : '—'}</td>
+                    <td className="num">
+                      {relative != null
+                        ? (relative === 1 ? '1.00×' : `${relative.toFixed(2)}×`)
+                        : '—'}
+                    </td>
+                    <td className="bench-bar-cell">
+                      {ok && (
+                        <div className="bench-bar-track">
+                          <div
+                            className={`bench-bar ${relative === 1 ? 'best' : ''}`}
+                            style={{ width: `${width}%` }}
+                          />
+                        </div>
+                      )}
+                    </td>
+                    <td className="bench-output" title={row.output ?? row.error ?? ''}>
+                      {row.error
+                        ? <span className="bench-err">error: {row.error}</span>
+                        : <code>{row.output}</code>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="bench-footnote">
+            Lower is better. The bar shows speed relative to the fastest
+            implementation (longer bar = faster). All three compute the
+            same number — that they match is the correctness check.
+          </p>
+        </div>
+      )}
+
+      {!report && !loading && !error && (
+        <Placeholder>
+          Compare Flux against hand-written C and NumPy on the same kernel.
+          <br />
+          <span className="dim">
+            Each implementation runs in its own process; timing is end-to-end
+            wall clock.
+          </span>
+        </Placeholder>
+      )}
     </div>
   );
 }

@@ -1,0 +1,20 @@
+// Dot-product microbenchmark — Flux side.
+//
+// Inner kernel: dot(a, b) over an 8-element vector, repeated 1_000_000 times.
+// We perturb a[0] each iteration with a value derived from the running total
+// so LLVM can't hoist the call out of the loop (which would turn the whole
+// benchmark into a single multiply-add).
+fn bench() -> float {
+  let a: float[8] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+  let b: float[8] = [8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
+  let total: float = 0.0;
+  let i: int = 0;
+  while i < 1000000 {
+    a[0] = total / 1000000000.0;
+    total = total + dot(a, b);
+    i = i + 1;
+  }
+  return total;
+}
+
+print(bench());
