@@ -267,16 +267,6 @@ export default function App() {
             Benchmarks
           </button>
         </nav>
-        {appPage === 'playground' && (
-          <nav className="header-nav">
-            <button type="button" className="header-link" onClick={() => setSidebarView('examples')}>
-              Examples
-            </button>
-            <button type="button" className="header-link" onClick={() => setSidebarView('docs')}>
-              Docs
-            </button>
-          </nav>
-        )}
         <div className="header-meta">
           <span className={`status-dot ${wasmReady ? 'ok' : 'warn'}`} aria-hidden />
           <span>{wasmReady ? 'wasm ready' : 'wasm loading'}</span>
