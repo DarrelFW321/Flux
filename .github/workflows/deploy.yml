@@ -41,7 +41,7 @@ jobs:
       - name: Build
         working-directory: frontend
         env:
-          VITE_BACKEND_URL: ${{ secrets.VITE_BACKEND_URL }}
+          VITE_BACKEND_URL: ${{ vars.VITE_BACKEND_URL }}
         run: npm run build
 
       # ── Deploy to GitHub Pages ──────────────────────────────────────────────
