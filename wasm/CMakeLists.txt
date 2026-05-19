@@ -13,6 +13,9 @@ add_executable(flux_wasm
     ${SRC}/compiler/frontend/typechecker.cpp
     ${SRC}/compiler/frontend/dumper.cpp
     ${SRC}/compiler/frontend/wasm_bindings.cpp
+    ${SRC}/compiler/midend/ir.cpp
+    ${SRC}/compiler/midend/lower_from_ast.cpp
+    ${SRC}/compiler/midend/passes.cpp
 )
 
 target_include_directories(flux_wasm PRIVATE ${SRC}/compiler)

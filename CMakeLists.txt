@@ -20,6 +20,9 @@ add_executable(flux
     compiler/frontend/parser.cpp
     compiler/frontend/typechecker.cpp
     compiler/frontend/dumper.cpp
+    compiler/midend/ir.cpp
+    compiler/midend/lower_from_ast.cpp
+    compiler/midend/passes.cpp
     compiler/backend/codegen.cpp
     compiler/backend/native.cpp
 )

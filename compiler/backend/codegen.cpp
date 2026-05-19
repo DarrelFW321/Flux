@@ -4,9 +4,21 @@
 #include <llvm/IR/Type.h>
 #include <stdexcept>
 
+// ── FluxIR → LLVM IR lowering ────────────────────────────────────────────────
+//
+// One MIR instruction lowers to one LLVM operation, with three exceptions
+// that expand to a small loop:
+//   • ARRAY_OP   — element-wise (and broadcast) arithmetic
+//   • REDUCE_SUM — left fold over an array
+//   • REDUCE_DOT — pairwise multiply + sum of two arrays
+//
+// Those emitters create their own cond/body/exit basic blocks and leave the
+// builder positioned at the exit, so subsequent MIR insts continue from
+// there.
+
 CodeGen::CodeGen() {}
 
-// ── Type helpers ──────────────────────────────────────────────────────────────
+// ── Type helpers ─────────────────────────────────────────────────────────────
 
 llvm::Type* CodeGen::llvm_scalar_type(FluxType::Kind k) {
     switch (k) {
@@ -25,7 +37,6 @@ llvm::Type* CodeGen::llvm_storage_type(const FluxType& t) {
     return elem;
 }
 
-// In LLVM, arrays are passed and returned by pointer.
 llvm::Type* CodeGen::llvm_param_type(const FluxType& t) {
     if (t.is_array()) return llvm::PointerType::getUnqual(ctx_);
     return llvm_scalar_type(t.kind);
@@ -37,10 +48,37 @@ llvm::AllocaInst* CodeGen::create_entry_alloca(const std::string& name, llvm::Ty
     return tmp.CreateAlloca(ty, nullptr, name);
 }
 
-// ── Builtins ──────────────────────────────────────────────────────────────────
+void CodeGen::emit_array_memcpy(llvm::Value* dest, llvm::Value* src, const FluxType& arr_t) {
+    auto* arr_ty = llvm_storage_type(arr_t);
+    uint64_t   size  = module_->getDataLayout().getTypeAllocSize(arr_ty).getFixedValue();
+    llvm::Align align = module_->getDataLayout().getABITypeAlign(arr_ty);
+    builder_->CreateMemCpy(dest, align, src, align, size);
+}
+
+// ── Value bookkeeping ───────────────────────────────────────────────────────
+
+llvm::Value* CodeGen::get_value(mir::ValueId id) const {
+    auto it = values_.find(id);
+    if (it == values_.end())
+        throw std::runtime_error("codegen: undefined ValueId %" + std::to_string(id));
+    return it->second;
+}
+
+const FluxType& CodeGen::value_type(mir::ValueId id) const {
+    auto it = value_types_.find(id);
+    if (it == value_types_.end())
+        throw std::runtime_error("codegen: untyped ValueId %" + std::to_string(id));
+    return it->second;
+}
+
+void CodeGen::bind_value(mir::ValueId id, llvm::Value* v, FluxType t) {
+    values_[id]      = v;
+    value_types_[id] = t;
+}
+
+// ── Built-ins ───────────────────────────────────────────────────────────────
 
 void CodeGen::declare_builtins() {
-    // int printf(char*, ...)
     auto* printf_ty = llvm::FunctionType::get(
         llvm::Type::getInt32Ty(ctx_),
         {llvm::PointerType::getUnqual(ctx_)},
@@ -49,241 +87,240 @@ void CodeGen::declare_builtins() {
         printf_ty, llvm::Function::ExternalLinkage, "printf", module_.get());
 }
 
-void CodeGen::emit_print(llvm::Value* val) {
-    auto* ty = val->getType();
-    llvm::Value* fmt_str;
+// ── Function declarations ───────────────────────────────────────────────────
+//
+// Walks the module up-front and registers every function's LLVM signature so
+// calls can resolve regardless of definition order.
+void CodeGen::declare_function(const mir::Function& fn) {
+    FnInfo info;
+    info.return_type = fn.return_type;
+    for (const auto& p : fn.params) info.param_types.push_back(p.type);
 
-    if (ty->isIntegerTy(32)) {
-        fmt_str = builder_->CreateGlobalString("%d\n", ".fmt.int");
-    } else if (ty->isDoubleTy()) {
-        fmt_str = builder_->CreateGlobalString("%g\n", ".fmt.float");
-    } else if (ty->isIntegerTy(1)) {
-        // Zero-extend bool to i32 so printf sees an int argument.
-        val     = builder_->CreateZExt(val, llvm::Type::getInt32Ty(ctx_), "b2i");
-        fmt_str = builder_->CreateGlobalString("%d\n", ".fmt.bool");
+    std::vector<llvm::Type*> param_tys;
+    llvm::Type* llvm_ret_ty;
+
+    if (info.returns_array()) {
+        param_tys.push_back(llvm::PointerType::getUnqual(ctx_));
+        llvm_ret_ty = llvm::Type::getVoidTy(ctx_);
     } else {
-        throw std::runtime_error("emit_print: unsupported value type");
+        llvm_ret_ty = llvm_scalar_type(info.return_type.kind);
     }
+    for (const auto& pt : info.param_types) param_tys.push_back(llvm_param_type(pt));
 
-    builder_->CreateCall(printf_fn_->getFunctionType(), printf_fn_, {fmt_str, val});
+    auto* fn_ty   = llvm::FunctionType::get(llvm_ret_ty, param_tys, /*isVarArg*/ false);
+    auto* llvm_fn = llvm::Function::Create(
+        fn_ty, llvm::Function::ExternalLinkage, fn.name, module_.get());
+
+    size_t arg_offset = info.returns_array() ? 1 : 0;
+    if (arg_offset) llvm_fn->getArg(0)->setName(fn.name + ".out");
+    for (size_t i = 0; i < fn.params.size(); ++i)
+        llvm_fn->getArg(i + arg_offset)->setName(fn.params[i].name);
+
+    info.fn = llvm_fn;
+    functions_[fn.name] = std::move(info);
 }
 
-// ── First pass: register function stubs so calls work in any order ────────────
+// ── Function body lowering ──────────────────────────────────────────────────
 
-void CodeGen::first_pass(const Program& prog) {
-    for (const auto& item : prog.items) {
-        const auto* fn = std::get_if<FnDecl>(&item);
-        if (!fn) continue;
-
-        FnInfo info;
-        info.return_type = FluxType::parse(fn->return_type);
-        for (const auto& p : fn->params)
-            info.param_types.push_back(FluxType::parse(p.type_name));
-
-        // Build the LLVM signature.
-        //   Array-returning fn:  void f(ptr %ret, ...real_params)
-        //   Scalar-returning fn: T    f(...real_params)
-        std::vector<llvm::Type*> param_tys;
-        llvm::Type* llvm_ret_ty;
-        if (info.return_type.is_array()) {
-            param_tys.push_back(llvm::PointerType::getUnqual(ctx_));
-            llvm_ret_ty = llvm::Type::getVoidTy(ctx_);
-        } else {
-            llvm_ret_ty = llvm_scalar_type(info.return_type.kind);
-        }
-        for (const auto& pt : info.param_types)
-            param_tys.push_back(llvm_param_type(pt));
-
-        auto* fn_ty   = llvm::FunctionType::get(llvm_ret_ty, param_tys, false);
-        auto* llvm_fn = llvm::Function::Create(
-            fn_ty, llvm::Function::ExternalLinkage, fn->name, module_.get());
-
-        size_t arg_offset = info.return_type.is_array() ? 1 : 0;
-        if (arg_offset) llvm_fn->getArg(0)->setName(fn->name + ".out");
-        for (size_t i = 0; i < fn->params.size(); ++i)
-            llvm_fn->getArg(i + arg_offset)->setName(fn->params[i].name);
-
-        info.fn = llvm_fn;
-        functions_[fn->name] = std::move(info);
-    }
-}
-
-// ── Function codegen ──────────────────────────────────────────────────────────
-
-void CodeGen::gen_fn(const FnDecl& fn) {
-    const auto& info = functions_.at(fn.name);
+void CodeGen::gen_function(const mir::Function& fn) {
+    const auto& info     = functions_.at(fn.name);
     current_fn_          = info.fn;
     current_return_type_ = info.return_type;
-    named_values_.clear();
+    current_ret_buf_     = info.returns_array() ? current_fn_->getArg(0) : nullptr;
+    values_.clear();
+    value_types_.clear();
+    blocks_.clear();
 
-    auto* entry = llvm::BasicBlock::Create(ctx_, "entry", current_fn_);
-    builder_->SetInsertPoint(entry);
+    // Pre-create one LLVM BasicBlock per MIR block. Branch terminators target
+    // these directly; specialized emitters may interpose their own blocks but
+    // always leave the builder at a block that flows into the next instruction.
+    for (const auto& b : fn.blocks) {
+        std::string name = b.label.empty() ? ("bb" + std::to_string(b.id)) : b.label;
+        blocks_[b.id] = llvm::BasicBlock::Create(ctx_, name, current_fn_);
+    }
 
-    // For array-returning functions, the LLVM signature has a hidden first
-    // pointer parameter (the return slot) — skip it when binding user params.
-    const size_t arg_offset = info.returns_array() ? 1 : 0;
-
+    // Bind parameter ValueIds to LLVM arg values.
+    size_t arg_offset = info.returns_array() ? 1 : 0;
     for (size_t i = 0; i < fn.params.size(); ++i) {
         auto& arg = *(current_fn_->arg_begin() + i + arg_offset);
-        FluxType pt = info.param_types[i];
-        std::string name = fn.params[i].name;
-
-        //   Scalar: alloca + store (so subsequent loads/stores look uniform).
-        //   Array : use the incoming pointer directly (no copy — v2 pass-by-reference).
-        if (pt.is_array()) {
-            named_values_[name] = { &arg, pt };
-        } else {
-            auto* alloca = create_entry_alloca(name, arg.getType());
-            builder_->CreateStore(&arg, alloca);
-            named_values_[name] = { alloca, pt };
-        }
+        bind_value(fn.params[i].id, &arg, fn.params[i].type);
     }
 
-    gen_block(*fn.body);
+    // Emit each block.
+    for (const auto& b : fn.blocks) {
+        builder_->SetInsertPoint(blocks_[b.id]);
+        for (const auto& inst : b.insts) gen_inst(inst);
+        gen_terminator(b.term);
+    }
 
-    // Safety net: add a default terminator if the last block has none.
-    if (!builder_->GetInsertBlock()->getTerminator()) {
+    // Safety net: any block left without a terminator gets a default.
+    for (auto& bb : *current_fn_) {
+        if (bb.getTerminator()) continue;
+        builder_->SetInsertPoint(&bb);
         auto* ret_ty = current_fn_->getReturnType();
-        if (ret_ty->isVoidTy())
+        if (ret_ty->isVoidTy()) builder_->CreateRetVoid();
+        else                    builder_->CreateRet(llvm::Constant::getNullValue(ret_ty));
+    }
+}
+
+// ── Terminator lowering ─────────────────────────────────────────────────────
+
+void CodeGen::gen_terminator(const mir::Terminator& t) {
+    switch (t.kind) {
+        case mir::Terminator::BR:
+            builder_->CreateBr(blocks_.at(t.target_t));
+            return;
+        case mir::Terminator::BR_COND:
+            builder_->CreateCondBr(get_value(t.cond),
+                                   blocks_.at(t.target_t),
+                                   blocks_.at(t.target_f));
+            return;
+        case mir::Terminator::RET: {
+            llvm::Value* rv = get_value(t.ret_val);
+            if (current_return_type_.is_array()) {
+                emit_array_memcpy(current_ret_buf_, rv, current_return_type_);
+                builder_->CreateRetVoid();
+            } else {
+                builder_->CreateRet(rv);
+            }
+            return;
+        }
+        case mir::Terminator::RET_VOID:
             builder_->CreateRetVoid();
-        else
-            builder_->CreateRet(llvm::Constant::getNullValue(ret_ty));
+            return;
+        case mir::Terminator::NONE:
+            // Block has no MIR terminator (e.g. unreachable merge); the
+            // post-pass in gen_function will supply a safety-net terminator.
+            return;
     }
 }
 
-// ── Top-level statements → synthetic main() ──────────────────────────────────
+// ── Instruction lowering ────────────────────────────────────────────────────
 
-void CodeGen::gen_top_level_stmts(const Program& prog) {
-    bool has_stmts = false;
-    for (const auto& item : prog.items)
-        if (std::holds_alternative<std::unique_ptr<Stmt>>(item)) { has_stmts = true; break; }
-    if (!has_stmts) return;
+void CodeGen::gen_inst(const mir::Inst& i) {
+    using mir::Op;
 
-    auto* main_ty = llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx_), false);
-    current_fn_   = llvm::Function::Create(
-        main_ty, llvm::Function::ExternalLinkage, "main", module_.get());
-    current_return_type_ = FluxType::scalar(FluxType::Kind::Int);
-    named_values_.clear();
-
-    auto* entry = llvm::BasicBlock::Create(ctx_, "entry", current_fn_);
-    builder_->SetInsertPoint(entry);
-
-    for (const auto& item : prog.items)
-        if (const auto* sp = std::get_if<std::unique_ptr<Stmt>>(&item))
-            gen_stmt(**sp);
-
-    if (!builder_->GetInsertBlock()->getTerminator())
-        builder_->CreateRet(llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
-}
-
-// ── Entry point ───────────────────────────────────────────────────────────────
-
-std::unique_ptr<llvm::Module> CodeGen::generate(const Program& prog) {
-    module_  = std::make_unique<llvm::Module>("flux_module", ctx_);
-    builder_ = std::make_unique<llvm::IRBuilder<>>(ctx_);
-
-    declare_builtins();
-    first_pass(prog);
-
-    for (const auto& item : prog.items)
-        if (const auto* fn = std::get_if<FnDecl>(&item)) gen_fn(*fn);
-
-    gen_top_level_stmts(prog);
-
-    return std::move(module_);
-}
-
-// ── Static type re-derivation (mirrors typechecker but cheaper here) ─────────
-
-FluxType CodeGen::expr_type(const Expr& e) const {
-    return std::visit([this, &e](const auto& v) -> FluxType {
-        using T = std::decay_t<decltype(v)>;
-        if constexpr (std::is_same_v<T, IntLitExpr>)   return FluxType::scalar(FluxType::Kind::Int);
-        if constexpr (std::is_same_v<T, FloatLitExpr>) return FluxType::scalar(FluxType::Kind::Float);
-        if constexpr (std::is_same_v<T, BoolLitExpr>)  return FluxType::scalar(FluxType::Kind::Bool);
-        if constexpr (std::is_same_v<T, IdentExpr>)    return named_values_.at(v.name).type;
-        if constexpr (std::is_same_v<T, ArrayLitExpr>) {
-            FluxType first = expr_type(*v.elements[0]);
-            return FluxType::array(first.kind, (int)v.elements.size());
+    switch (i.op) {
+        case Op::CONST_INT: {
+            auto* c = llvm::ConstantInt::getSigned(llvm::Type::getInt32Ty(ctx_), i.ival);
+            bind_value(i.result, c, i.result_type);
+            return;
         }
-        if constexpr (std::is_same_v<T, IndexExpr>)    return expr_type(*v.array).elem();
-        if constexpr (std::is_same_v<T, UnaryExpr>)    return expr_type(*v.operand);
-        if constexpr (std::is_same_v<T, BinaryExpr>) {
-            FluxType lhs = expr_type(*v.left);
-            const bool is_cmp = (v.op=="=="||v.op=="!="||v.op=="<"||v.op==">"||v.op=="<="||v.op==">=");
-            if (is_cmp && !lhs.is_array()) return FluxType::scalar(FluxType::Kind::Bool);
-            return lhs;
+        case Op::CONST_FLOAT: {
+            auto* c = llvm::ConstantFP::get(llvm::Type::getDoubleTy(ctx_), i.fval);
+            bind_value(i.result, c, i.result_type);
+            return;
         }
-        if constexpr (std::is_same_v<T, CallExpr>) {
-            if (v.callee == "sum") return expr_type(*v.args[0]).elem();
-            if (v.callee == "dot") return expr_type(*v.args[0]).elem();
-            return functions_.at(v.callee).return_type;
+        case Op::CONST_BOOL: {
+            auto* c = llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx_), i.bval ? 1 : 0);
+            bind_value(i.result, c, i.result_type);
+            return;
         }
-        throw std::runtime_error("expr_type: unhandled expression");
-    }, e.data);
-}
 
-// ── Scalar binary ops ─────────────────────────────────────────────────────────
+        case Op::ALLOCA: {
+            // Always at the entry block so mem2reg can promote it later.
+            auto* slot = create_entry_alloca("slot", llvm_scalar_type(i.result_type.kind));
+            bind_value(i.result, slot, i.result_type);
+            return;
+        }
+        case Op::LOAD: {
+            auto* slot  = llvm::cast<llvm::AllocaInst>(get_value(i.operands[0]));
+            auto* val   = builder_->CreateLoad(slot->getAllocatedType(), slot, "ld");
+            bind_value(i.result, val, i.result_type);
+            return;
+        }
+        case Op::STORE:
+            builder_->CreateStore(get_value(i.operands[1]), get_value(i.operands[0]));
+            return;
 
-llvm::Value* CodeGen::gen_scalar_binop(const std::string& op,
-                                       llvm::Value* lhs, llvm::Value* rhs,
-                                       FluxType::Kind kind) {
-    const bool fp = (kind == FluxType::Kind::Float);
+        case Op::NEG: {
+            auto* v = get_value(i.operands[0]);
+            auto* r = v->getType()->isDoubleTy() ? builder_->CreateFNeg(v, "fneg")
+                                                 : builder_->CreateNeg (v, "neg");
+            bind_value(i.result, r, i.result_type);
+            return;
+        }
 
-    // Comparisons → i1
-    if (op == "==") return fp ? builder_->CreateFCmpOEQ(lhs,rhs,"cmp") : builder_->CreateICmpEQ(lhs,rhs,"cmp");
-    if (op == "!=") return fp ? builder_->CreateFCmpONE(lhs,rhs,"cmp") : builder_->CreateICmpNE(lhs,rhs,"cmp");
-    if (op == "<")  return fp ? builder_->CreateFCmpOLT(lhs,rhs,"cmp") : builder_->CreateICmpSLT(lhs,rhs,"cmp");
-    if (op == ">")  return fp ? builder_->CreateFCmpOGT(lhs,rhs,"cmp") : builder_->CreateICmpSGT(lhs,rhs,"cmp");
-    if (op == "<=") return fp ? builder_->CreateFCmpOLE(lhs,rhs,"cmp") : builder_->CreateICmpSLE(lhs,rhs,"cmp");
-    if (op == ">=") return fp ? builder_->CreateFCmpOGE(lhs,rhs,"cmp") : builder_->CreateICmpSGE(lhs,rhs,"cmp");
+        case Op::ADD: case Op::SUB: case Op::MUL: case Op::DIV: case Op::MOD:
+        case Op::CMP_EQ: case Op::CMP_NE:
+        case Op::CMP_LT: case Op::CMP_GT: case Op::CMP_LE: case Op::CMP_GE: {
+            auto* lhs = get_value(i.operands[0]);
+            auto* rhs = get_value(i.operands[1]);
+            FluxType::Kind k = value_type(i.operands[0]).kind;
+            auto* r = emit_scalar_binop(i.op, lhs, rhs, k);
+            bind_value(i.result, r, i.result_type);
+            return;
+        }
 
-    if (fp) {
-        if (op == "+") return builder_->CreateFAdd(lhs, rhs, "add");
-        if (op == "-") return builder_->CreateFSub(lhs, rhs, "sub");
-        if (op == "*") return builder_->CreateFMul(lhs, rhs, "mul");
-        if (op == "/") return builder_->CreateFDiv(lhs, rhs, "div");
-    } else {
-        if (op == "+") return builder_->CreateAdd(lhs, rhs, "add");
-        if (op == "-") return builder_->CreateSub(lhs, rhs, "sub");
-        if (op == "*") return builder_->CreateMul(lhs, rhs, "mul");
-        if (op == "/") return builder_->CreateSDiv(lhs, rhs, "div");
-        if (op == "%") return builder_->CreateSRem(lhs, rhs, "rem");
+        case Op::ARRAY_LIT:   bind_value(i.result, emit_array_literal(i), i.result_type); return;
+        case Op::ARRAY_OP:    bind_value(i.result, emit_array_op     (i), i.result_type); return;
+        case Op::ARRAY_COPY:  bind_value(i.result, emit_array_copy   (i), i.result_type); return;
+        case Op::INDEX_LOAD:  bind_value(i.result, emit_index_load   (i), i.result_type); return;
+        case Op::INDEX_STORE: emit_index_store(i); return;
+        case Op::REDUCE_SUM:  bind_value(i.result, emit_reduce_sum(i), i.result_type); return;
+        case Op::REDUCE_DOT:  bind_value(i.result, emit_reduce_dot(i), i.result_type); return;
+        case Op::CALL:        bind_value(i.result, emit_call(i), i.result_type); return;
+        case Op::PRINT:       emit_print(i); return;
     }
-    throw std::runtime_error("gen_scalar_binop: unknown op '" + op + "'");
+    throw std::runtime_error("codegen: unhandled MIR op");
 }
 
-// ── Array literal: alloca + per-element store, returns ptr ────────────────────
+// ── Scalar binary ops ───────────────────────────────────────────────────────
 
-llvm::Value* CodeGen::gen_array_literal(const ArrayLitExpr& a, const FluxType& t) {
-    auto* arr_ty  = llvm::ArrayType::get(llvm_scalar_type(t.kind), (uint64_t)t.array_size);
-    auto* storage = create_entry_alloca("arr.lit", arr_ty);
-    auto* i32     = llvm::Type::getInt32Ty(ctx_);
-    auto* zero    = llvm::ConstantInt::get(i32, 0);
+llvm::Value* CodeGen::emit_scalar_binop(mir::Op op, llvm::Value* lhs, llvm::Value* rhs,
+                                        FluxType::Kind k) {
+    const bool fp = (k == FluxType::Kind::Float);
+    switch (op) {
+        case mir::Op::ADD: return fp ? builder_->CreateFAdd(lhs, rhs, "add") : builder_->CreateAdd(lhs, rhs, "add");
+        case mir::Op::SUB: return fp ? builder_->CreateFSub(lhs, rhs, "sub") : builder_->CreateSub(lhs, rhs, "sub");
+        case mir::Op::MUL: return fp ? builder_->CreateFMul(lhs, rhs, "mul") : builder_->CreateMul(lhs, rhs, "mul");
+        case mir::Op::DIV: return fp ? builder_->CreateFDiv(lhs, rhs, "div") : builder_->CreateSDiv(lhs, rhs, "div");
+        case mir::Op::MOD: return builder_->CreateSRem(lhs, rhs, "rem");
+        case mir::Op::CMP_EQ: return fp ? builder_->CreateFCmpOEQ(lhs, rhs, "cmp") : builder_->CreateICmpEQ (lhs, rhs, "cmp");
+        case mir::Op::CMP_NE: return fp ? builder_->CreateFCmpONE(lhs, rhs, "cmp") : builder_->CreateICmpNE (lhs, rhs, "cmp");
+        case mir::Op::CMP_LT: return fp ? builder_->CreateFCmpOLT(lhs, rhs, "cmp") : builder_->CreateICmpSLT(lhs, rhs, "cmp");
+        case mir::Op::CMP_GT: return fp ? builder_->CreateFCmpOGT(lhs, rhs, "cmp") : builder_->CreateICmpSGT(lhs, rhs, "cmp");
+        case mir::Op::CMP_LE: return fp ? builder_->CreateFCmpOLE(lhs, rhs, "cmp") : builder_->CreateICmpSLE(lhs, rhs, "cmp");
+        case mir::Op::CMP_GE: return fp ? builder_->CreateFCmpOGE(lhs, rhs, "cmp") : builder_->CreateICmpSGE(lhs, rhs, "cmp");
+        default: break;
+    }
+    throw std::logic_error("emit_scalar_binop: not a binop");
+}
 
-    for (size_t i = 0; i < a.elements.size(); ++i) {
-        auto* val = gen_expr(*a.elements[i]);
-        auto* idx = llvm::ConstantInt::get(i32, (uint64_t)i);
+// ── Array literal: alloca + element stores ──────────────────────────────────
+
+llvm::Value* CodeGen::emit_array_literal(const mir::Inst& i) {
+    const FluxType& t = i.result_type;
+    auto* arr_ty   = llvm::ArrayType::get(llvm_scalar_type(t.kind), (uint64_t)t.array_size);
+    auto* storage  = create_entry_alloca("arr.lit", arr_ty);
+    auto* i32      = llvm::Type::getInt32Ty(ctx_);
+    auto* zero     = llvm::ConstantInt::get(i32, 0);
+    for (size_t k = 0; k < i.operands.size(); ++k) {
+        auto* val = get_value(i.operands[k]);
+        auto* idx = llvm::ConstantInt::get(i32, (uint64_t)k);
         auto* gep = builder_->CreateInBoundsGEP(arr_ty, storage, {zero, idx}, "lit.gep");
         builder_->CreateStore(val, gep);
     }
     return storage;
 }
 
-// ── Element-wise array op (with scalar broadcasting) ─────────────────────────
+// ── Element-wise array op (with scalar broadcast) ───────────────────────────
 
-llvm::Value* CodeGen::gen_array_binop(const std::string& op,
-                                      llvm::Value* lhs, FluxType lhs_t,
-                                      llvm::Value* rhs, FluxType rhs_t,
-                                      const FluxType& arr_t) {
+llvm::Value* CodeGen::emit_array_op(const mir::Inst& i) {
+    const FluxType& arr_t = i.result_type;
+    FluxType lhs_t = value_type(i.operands[0]);
+    FluxType rhs_t = value_type(i.operands[1]);
+    llvm::Value* lhs = get_value(i.operands[0]);
+    llvm::Value* rhs = get_value(i.operands[1]);
+
     auto* elem_ty = llvm_scalar_type(arr_t.kind);
     auto* arr_ty  = llvm::ArrayType::get(elem_ty, (uint64_t)arr_t.array_size);
     auto* result  = create_entry_alloca("arr.tmp", arr_ty);
 
-    auto* i32     = llvm::Type::getInt32Ty(ctx_);
-    auto* zero    = llvm::ConstantInt::get(i32, 0);
-    auto* one     = llvm::ConstantInt::get(i32, 1);
-    auto* size    = llvm::ConstantInt::get(i32, (uint64_t)arr_t.array_size);
+    auto* i32  = llvm::Type::getInt32Ty(ctx_);
+    auto* zero = llvm::ConstantInt::get(i32, 0);
+    auto* one  = llvm::ConstantInt::get(i32, 1);
+    auto* size = llvm::ConstantInt::get(i32, (uint64_t)arr_t.array_size);
 
     auto* idx_slot = create_entry_alloca("arr.i", i32);
     builder_->CreateStore(zero, idx_slot);
@@ -295,11 +332,9 @@ llvm::Value* CodeGen::gen_array_binop(const std::string& op,
     builder_->CreateBr(cond_bb);
     builder_->SetInsertPoint(cond_bb);
     auto* i_val = builder_->CreateLoad(i32, idx_slot, "i");
-    auto* cmp   = builder_->CreateICmpSLT(i_val, size, "i.lt.N");
-    builder_->CreateCondBr(cmp, body_bb, exit_bb);
+    builder_->CreateCondBr(builder_->CreateICmpSLT(i_val, size, "i.lt.N"), body_bb, exit_bb);
 
     builder_->SetInsertPoint(body_bb);
-    // Load array elements, or use the scalar SSA value directly (broadcast).
     llvm::Value* op_lhs;
     if (lhs_t.is_array()) {
         auto* lp = builder_->CreateInBoundsGEP(arr_ty, lhs, {zero, i_val}, "l.gep");
@@ -314,7 +349,17 @@ llvm::Value* CodeGen::gen_array_binop(const std::string& op,
     } else {
         op_rhs = rhs;
     }
-    auto* res    = gen_scalar_binop(op, op_lhs, op_rhs, arr_t.kind);
+
+    // sval is the original arith operator ("+", "-", "*", "/", "%").
+    mir::Op scalar_op;
+    if      (i.sval == "+") scalar_op = mir::Op::ADD;
+    else if (i.sval == "-") scalar_op = mir::Op::SUB;
+    else if (i.sval == "*") scalar_op = mir::Op::MUL;
+    else if (i.sval == "/") scalar_op = mir::Op::DIV;
+    else if (i.sval == "%") scalar_op = mir::Op::MOD;
+    else throw std::runtime_error("emit_array_op: unknown op '" + i.sval + "'");
+
+    auto* res    = emit_scalar_binop(scalar_op, op_lhs, op_rhs, arr_t.kind);
     auto* op_dst = builder_->CreateInBoundsGEP(arr_ty, result, {zero, i_val}, "d.gep");
     builder_->CreateStore(res, op_dst);
 
@@ -326,37 +371,20 @@ llvm::Value* CodeGen::gen_array_binop(const std::string& op,
     return result;
 }
 
-// memcpy(dest, src, sizeof([N x T])) — used for array returns and let-copies.
-void CodeGen::emit_array_memcpy(llvm::Value* dest, llvm::Value* src, const FluxType& arr_t) {
-    auto* arr_ty = llvm_storage_type(arr_t);
-    uint64_t size = module_->getDataLayout().getTypeAllocSize(arr_ty).getFixedValue();
-    llvm::Align align = module_->getDataLayout().getABITypeAlign(arr_ty);
-    builder_->CreateMemCpy(dest, align, src, align, size);
+// ── Array copy: alloca + memcpy ─────────────────────────────────────────────
+
+llvm::Value* CodeGen::emit_array_copy(const mir::Inst& i) {
+    const FluxType& t = i.result_type;
+    auto* dest = create_entry_alloca("arr.copy", llvm_storage_type(t));
+    emit_array_memcpy(dest, get_value(i.operands[0]), t);
+    return dest;
 }
 
-// ── Index read: GEP + load ────────────────────────────────────────────────────
+// ── Reductions: sum and dot ─────────────────────────────────────────────────
 
-llvm::Value* CodeGen::gen_index(const IndexExpr& ix) {
-    FluxType arr_t = expr_type(*ix.array);
-    auto* arr_ptr  = gen_expr(*ix.array);
-    auto* idx_val  = gen_expr(*ix.index);
-
-    auto* elem_ty  = llvm_scalar_type(arr_t.kind);
-    auto* arr_ty   = llvm::ArrayType::get(elem_ty, (uint64_t)arr_t.array_size);
-    auto* zero     = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
-
-    auto* gep = builder_->CreateInBoundsGEP(arr_ty, arr_ptr, {zero, idx_val}, "ix.gep");
-    return builder_->CreateLoad(elem_ty, gep, "ix");
-}
-
-// ── Built-in calls: sum(a), dot(a, b) ────────────────────────────────────────
-
-llvm::Value* CodeGen::gen_builtin_call(const CallExpr& v) {
-    if (v.callee != "sum" && v.callee != "dot") return nullptr;
-
-    FluxType arr_t  = expr_type(*v.args[0]);
-    auto*    a_ptr  = gen_expr(*v.args[0]);
-    auto*    b_ptr  = (v.callee == "dot") ? gen_expr(*v.args[1]) : nullptr;
+llvm::Value* CodeGen::emit_reduce_sum(const mir::Inst& i) {
+    FluxType arr_t = value_type(i.operands[0]);
+    auto* a_ptr = get_value(i.operands[0]);
 
     auto* elem_ty = llvm_scalar_type(arr_t.kind);
     auto* arr_ty  = llvm::ArrayType::get(elem_ty, (uint64_t)arr_t.array_size);
@@ -364,41 +392,32 @@ llvm::Value* CodeGen::gen_builtin_call(const CallExpr& v) {
     auto* zero    = llvm::ConstantInt::get(i32, 0);
     auto* one     = llvm::ConstantInt::get(i32, 1);
     auto* size    = llvm::ConstantInt::get(i32, (uint64_t)arr_t.array_size);
-
     const bool fp = (arr_t.kind == FluxType::Kind::Float);
 
-    auto* acc_slot = create_entry_alloca(v.callee + ".acc", elem_ty);
+    auto* acc_slot = create_entry_alloca("sum.acc", elem_ty);
     builder_->CreateStore(
         fp ? (llvm::Value*)llvm::ConstantFP::get(elem_ty, 0.0)
            : (llvm::Value*)llvm::ConstantInt::get(elem_ty, 0),
         acc_slot);
 
-    auto* idx_slot = create_entry_alloca(v.callee + ".i", i32);
+    auto* idx_slot = create_entry_alloca("sum.i", i32);
     builder_->CreateStore(zero, idx_slot);
 
-    auto* cond_bb = llvm::BasicBlock::Create(ctx_, v.callee + ".cond", current_fn_);
-    auto* body_bb = llvm::BasicBlock::Create(ctx_, v.callee + ".body", current_fn_);
-    auto* exit_bb = llvm::BasicBlock::Create(ctx_, v.callee + ".exit", current_fn_);
+    auto* cond_bb = llvm::BasicBlock::Create(ctx_, "sum.cond", current_fn_);
+    auto* body_bb = llvm::BasicBlock::Create(ctx_, "sum.body", current_fn_);
+    auto* exit_bb = llvm::BasicBlock::Create(ctx_, "sum.exit", current_fn_);
 
     builder_->CreateBr(cond_bb);
     builder_->SetInsertPoint(cond_bb);
     auto* i_val = builder_->CreateLoad(i32, idx_slot, "i");
-    auto* cmp   = builder_->CreateICmpSLT(i_val, size, "i.lt.N");
-    builder_->CreateCondBr(cmp, body_bb, exit_bb);
+    builder_->CreateCondBr(builder_->CreateICmpSLT(i_val, size, "i.lt.N"), body_bb, exit_bb);
 
     builder_->SetInsertPoint(body_bb);
-    auto* ap = builder_->CreateInBoundsGEP(arr_ty, a_ptr, {zero, i_val}, "a.gep");
-    auto* av = builder_->CreateLoad(elem_ty, ap, "a");
-    llvm::Value* term = av;
-    if (v.callee == "dot") {
-        auto* bp = builder_->CreateInBoundsGEP(arr_ty, b_ptr, {zero, i_val}, "b.gep");
-        auto* bv = builder_->CreateLoad(elem_ty, bp, "b");
-        term = fp ? builder_->CreateFMul(av, bv, "prod")
-                  : builder_->CreateMul (av, bv, "prod");
-    }
+    auto* ap   = builder_->CreateInBoundsGEP(arr_ty, a_ptr, {zero, i_val}, "a.gep");
+    auto* av   = builder_->CreateLoad(elem_ty, ap, "a");
     auto* prev = builder_->CreateLoad(elem_ty, acc_slot, "acc");
-    auto* sum  = fp ? builder_->CreateFAdd(prev, term, "acc.next")
-                    : builder_->CreateAdd (prev, term, "acc.next");
+    auto* sum  = fp ? builder_->CreateFAdd(prev, av, "acc.next")
+                    : builder_->CreateAdd (prev, av, "acc.next");
     builder_->CreateStore(sum, acc_slot);
 
     auto* next = builder_->CreateAdd(i_val, one, "i.next");
@@ -406,203 +425,132 @@ llvm::Value* CodeGen::gen_builtin_call(const CallExpr& v) {
     builder_->CreateBr(cond_bb);
 
     builder_->SetInsertPoint(exit_bb);
-    return builder_->CreateLoad(elem_ty, acc_slot, v.callee + ".result");
+    return builder_->CreateLoad(elem_ty, acc_slot, "sum.result");
 }
 
-// ── Expression codegen ────────────────────────────────────────────────────────
+llvm::Value* CodeGen::emit_reduce_dot(const mir::Inst& i) {
+    FluxType arr_t = value_type(i.operands[0]);
+    auto* a_ptr = get_value(i.operands[0]);
+    auto* b_ptr = get_value(i.operands[1]);
 
-llvm::Value* CodeGen::gen_expr(const Expr& e) {
-    return std::visit([this, &e](const auto& v) -> llvm::Value* {
-        using T = std::decay_t<decltype(v)>;
+    auto* elem_ty = llvm_scalar_type(arr_t.kind);
+    auto* arr_ty  = llvm::ArrayType::get(elem_ty, (uint64_t)arr_t.array_size);
+    auto* i32     = llvm::Type::getInt32Ty(ctx_);
+    auto* zero    = llvm::ConstantInt::get(i32, 0);
+    auto* one     = llvm::ConstantInt::get(i32, 1);
+    auto* size    = llvm::ConstantInt::get(i32, (uint64_t)arr_t.array_size);
+    const bool fp = (arr_t.kind == FluxType::Kind::Float);
 
-        if constexpr (std::is_same_v<T, IntLitExpr>)
-            return llvm::ConstantInt::getSigned(llvm::Type::getInt32Ty(ctx_), v.value);
+    auto* acc_slot = create_entry_alloca("dot.acc", elem_ty);
+    builder_->CreateStore(
+        fp ? (llvm::Value*)llvm::ConstantFP::get(elem_ty, 0.0)
+           : (llvm::Value*)llvm::ConstantInt::get(elem_ty, 0),
+        acc_slot);
 
-        if constexpr (std::is_same_v<T, FloatLitExpr>)
-            return llvm::ConstantFP::get(llvm::Type::getDoubleTy(ctx_), v.value);
+    auto* idx_slot = create_entry_alloca("dot.i", i32);
+    builder_->CreateStore(zero, idx_slot);
 
-        if constexpr (std::is_same_v<T, BoolLitExpr>)
-            return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx_), v.value ? 1 : 0);
+    auto* cond_bb = llvm::BasicBlock::Create(ctx_, "dot.cond", current_fn_);
+    auto* body_bb = llvm::BasicBlock::Create(ctx_, "dot.body", current_fn_);
+    auto* exit_bb = llvm::BasicBlock::Create(ctx_, "dot.exit", current_fn_);
 
-        if constexpr (std::is_same_v<T, IdentExpr>) {
-            auto& b = named_values_.at(v.name);
-            if (b.type.is_array()) return b.ptr;            // arrays: hand back the pointer
-            auto* alloca = llvm::cast<llvm::AllocaInst>(b.ptr);
-            return builder_->CreateLoad(alloca->getAllocatedType(), alloca, v.name);
-        }
+    builder_->CreateBr(cond_bb);
+    builder_->SetInsertPoint(cond_bb);
+    auto* i_val = builder_->CreateLoad(i32, idx_slot, "i");
+    builder_->CreateCondBr(builder_->CreateICmpSLT(i_val, size, "i.lt.N"), body_bb, exit_bb);
 
-        if constexpr (std::is_same_v<T, ArrayLitExpr>) {
-            FluxType t = expr_type(e);
-            return gen_array_literal(v, t);
-        }
+    builder_->SetInsertPoint(body_bb);
+    auto* ap = builder_->CreateInBoundsGEP(arr_ty, a_ptr, {zero, i_val}, "a.gep");
+    auto* av = builder_->CreateLoad(elem_ty, ap, "a");
+    auto* bp = builder_->CreateInBoundsGEP(arr_ty, b_ptr, {zero, i_val}, "b.gep");
+    auto* bv = builder_->CreateLoad(elem_ty, bp, "b");
+    auto* prod = fp ? builder_->CreateFMul(av, bv, "prod") : builder_->CreateMul(av, bv, "prod");
+    auto* prev = builder_->CreateLoad(elem_ty, acc_slot, "acc");
+    auto* sum  = fp ? builder_->CreateFAdd(prev, prod, "acc.next")
+                    : builder_->CreateAdd (prev, prod, "acc.next");
+    builder_->CreateStore(sum, acc_slot);
 
-        if constexpr (std::is_same_v<T, IndexExpr>) {
-            return gen_index(v);
-        }
+    auto* next = builder_->CreateAdd(i_val, one, "i.next");
+    builder_->CreateStore(next, idx_slot);
+    builder_->CreateBr(cond_bb);
 
-        if constexpr (std::is_same_v<T, UnaryExpr>) {
-            auto* val = gen_expr(*v.operand);
-            if (val->getType()->isDoubleTy()) return builder_->CreateFNeg(val, "fneg");
-            return builder_->CreateNeg(val, "neg");
-        }
-
-        if constexpr (std::is_same_v<T, BinaryExpr>) {
-            FluxType lhs_t = expr_type(*v.left);
-            FluxType rhs_t = expr_type(*v.right);
-            auto* lhs = gen_expr(*v.left);
-            auto* rhs = gen_expr(*v.right);
-            if (lhs_t.is_array() || rhs_t.is_array()) {
-                FluxType arr_t = lhs_t.is_array() ? lhs_t : rhs_t;
-                return gen_array_binop(v.op, lhs, lhs_t, rhs, rhs_t, arr_t);
-            }
-            return gen_scalar_binop(v.op, lhs, rhs, lhs_t.kind);
-        }
-
-        if constexpr (std::is_same_v<T, CallExpr>) {
-            if (auto* built = gen_builtin_call(v)) return built;
-            const auto& info = functions_.at(v.callee);
-
-            std::vector<llvm::Value*> args;
-            llvm::Value* result_buf = nullptr;
-            if (info.returns_array()) {
-                // Allocate a buffer in the caller and pass its pointer as the
-                // hidden first argument; the call itself returns void.
-                result_buf = create_entry_alloca(v.callee + ".ret",
-                                                 llvm_storage_type(info.return_type));
-                args.push_back(result_buf);
-            }
-            for (const auto& a : v.args) args.push_back(gen_expr(*a));
-
-            if (info.returns_array()) {
-                builder_->CreateCall(info.fn, args);
-                return result_buf;
-            }
-            return builder_->CreateCall(info.fn, args, v.callee + ".ret");
-        }
-
-        throw std::runtime_error("codegen: unhandled expression variant");
-    }, e.data);
+    builder_->SetInsertPoint(exit_bb);
+    return builder_->CreateLoad(elem_ty, acc_slot, "dot.result");
 }
 
-// ── Statement codegen ─────────────────────────────────────────────────────────
+// ── Indexed access ──────────────────────────────────────────────────────────
 
-void CodeGen::gen_block(const BlockStmt& b) {
-    // Save outer-scope bindings; any new names declared here are removed on exit.
-    auto saved = named_values_;
-    for (const auto& s : b.stmts) {
-        if (builder_->GetInsertBlock()->getTerminator()) break; // dead code after return
-        gen_stmt(*s);
+llvm::Value* CodeGen::emit_index_load(const mir::Inst& i) {
+    FluxType arr_t = value_type(i.operands[0]);
+    auto* arr_ptr  = get_value(i.operands[0]);
+    auto* idx_val  = get_value(i.operands[1]);
+    auto* elem_ty  = llvm_scalar_type(arr_t.kind);
+    auto* arr_ty   = llvm::ArrayType::get(elem_ty, (uint64_t)arr_t.array_size);
+    auto* zero     = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    auto* gep = builder_->CreateInBoundsGEP(arr_ty, arr_ptr, {zero, idx_val}, "ix.gep");
+    return builder_->CreateLoad(elem_ty, gep, "ix");
+}
+
+void CodeGen::emit_index_store(const mir::Inst& i) {
+    FluxType arr_t = value_type(i.operands[0]);
+    auto* arr_ptr  = get_value(i.operands[0]);
+    auto* idx_val  = get_value(i.operands[1]);
+    auto* val      = get_value(i.operands[2]);
+    auto* elem_ty  = llvm_scalar_type(arr_t.kind);
+    auto* arr_ty   = llvm::ArrayType::get(elem_ty, (uint64_t)arr_t.array_size);
+    auto* zero     = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    auto* gep      = builder_->CreateInBoundsGEP(arr_ty, arr_ptr, {zero, idx_val}, "ix.set");
+    builder_->CreateStore(val, gep);
+}
+
+// ── Call ────────────────────────────────────────────────────────────────────
+
+llvm::Value* CodeGen::emit_call(const mir::Inst& i) {
+    const auto& info = functions_.at(i.sval);
+
+    std::vector<llvm::Value*> args;
+    llvm::Value* result_buf = nullptr;
+    if (info.returns_array()) {
+        result_buf = create_entry_alloca(i.sval + ".ret", llvm_storage_type(info.return_type));
+        args.push_back(result_buf);
     }
-    named_values_ = saved;
+    for (mir::ValueId arg_id : i.operands) args.push_back(get_value(arg_id));
+
+    if (info.returns_array()) {
+        builder_->CreateCall(info.fn, args);
+        return result_buf;
+    }
+    return builder_->CreateCall(info.fn, args, i.sval + ".ret");
 }
 
-void CodeGen::gen_stmt(const Stmt& s) {
-    std::visit([this](const auto& v) {
-        using T = std::decay_t<decltype(v)>;
+// ── Print ───────────────────────────────────────────────────────────────────
 
-        if constexpr (std::is_same_v<T, LetStmt>) {
-            FluxType t = FluxType::parse(v.type_name);
-            if (t.is_array()) {
-                // For initializers that already produce a fresh buffer (array
-                // literal, element-wise op, array-returning call), we can just
-                // bind the name to that pointer — nothing else aliases it.
-                // For an IdentExpr referring to an existing array, we must
-                // memcpy so that mutations to the new variable don't leak.
-                const bool needs_copy = std::holds_alternative<IdentExpr>(v.init->data);
-                if (needs_copy) {
-                    auto* dest = create_entry_alloca(v.name, llvm_storage_type(t));
-                    auto* src  = gen_expr(*v.init);
-                    emit_array_memcpy(dest, src, t);
-                    named_values_[v.name] = { dest, t };
-                } else {
-                    auto* ptr = gen_expr(*v.init);
-                    named_values_[v.name] = { ptr, t };
-                }
-            } else {
-                auto* alloca = create_entry_alloca(v.name, llvm_scalar_type(t.kind));
-                builder_->CreateStore(gen_expr(*v.init), alloca);
-                named_values_[v.name] = { alloca, t };
-            }
+void CodeGen::emit_print(const mir::Inst& i) {
+    llvm::Value* val = get_value(i.operands[0]);
+    auto* ty = val->getType();
+    llvm::Value* fmt_str;
+    if (ty->isIntegerTy(32)) {
+        fmt_str = builder_->CreateGlobalString("%d\n", ".fmt.int");
+    } else if (ty->isDoubleTy()) {
+        fmt_str = builder_->CreateGlobalString("%g\n", ".fmt.float");
+    } else if (ty->isIntegerTy(1)) {
+        val     = builder_->CreateZExt(val, llvm::Type::getInt32Ty(ctx_), "b2i");
+        fmt_str = builder_->CreateGlobalString("%d\n", ".fmt.bool");
+    } else {
+        throw std::runtime_error("emit_print: unsupported value type");
+    }
+    builder_->CreateCall(printf_fn_->getFunctionType(), printf_fn_, {fmt_str, val});
+}
 
-        } else if constexpr (std::is_same_v<T, AssignStmt>) {
-            // Scalar only (typechecker rejects whole-array assignment).
-            auto& b = named_values_.at(v.name);
-            builder_->CreateStore(gen_expr(*v.value), b.ptr);
+// ── Entry point ─────────────────────────────────────────────────────────────
 
-        } else if constexpr (std::is_same_v<T, IndexAssignStmt>) {
-            FluxType arr_t = expr_type(*v.array);
-            auto* arr_ptr  = gen_expr(*v.array);
-            auto* idx_val  = gen_expr(*v.index);
-            auto* val      = gen_expr(*v.value);
-            auto* elem_ty  = llvm_scalar_type(arr_t.kind);
-            auto* arr_ty   = llvm::ArrayType::get(elem_ty, (uint64_t)arr_t.array_size);
-            auto* zero     = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
-            auto* gep      = builder_->CreateInBoundsGEP(arr_ty, arr_ptr, {zero, idx_val}, "ix.set");
-            builder_->CreateStore(val, gep);
+std::unique_ptr<llvm::Module> CodeGen::generate(const mir::Module& m) {
+    module_  = std::make_unique<llvm::Module>("flux_module", ctx_);
+    builder_ = std::make_unique<llvm::IRBuilder<>>(ctx_);
 
-        } else if constexpr (std::is_same_v<T, ReturnStmt>) {
-            if (current_return_type_.is_array()) {
-                // Array return: memcpy into the hidden out-buffer (arg 0) and
-                // emit `ret void`. The caller knows the slot it passed in.
-                auto* src  = gen_expr(*v.value);
-                auto* dest = current_fn_->getArg(0);
-                emit_array_memcpy(dest, src, current_return_type_);
-                builder_->CreateRetVoid();
-            } else {
-                builder_->CreateRet(gen_expr(*v.value));
-            }
+    declare_builtins();
+    for (const auto& fn : m.functions) declare_function(fn);
+    for (const auto& fn : m.functions) gen_function(fn);
 
-        } else if constexpr (std::is_same_v<T, PrintStmt>) {
-            emit_print(gen_expr(*v.value));
-
-        } else if constexpr (std::is_same_v<T, IfStmt>) {
-            auto* cond = gen_expr(*v.condition);
-
-            if (v.else_block) {
-                auto* then_bb  = llvm::BasicBlock::Create(ctx_, "if.then",  current_fn_);
-                auto* else_bb  = llvm::BasicBlock::Create(ctx_, "if.else",  current_fn_);
-                auto* merge_bb = llvm::BasicBlock::Create(ctx_, "if.merge", current_fn_);
-                builder_->CreateCondBr(cond, then_bb, else_bb);
-
-                builder_->SetInsertPoint(then_bb);
-                gen_block(*v.then_block);
-                if (!builder_->GetInsertBlock()->getTerminator()) builder_->CreateBr(merge_bb);
-
-                builder_->SetInsertPoint(else_bb);
-                gen_block(**v.else_block);
-                if (!builder_->GetInsertBlock()->getTerminator()) builder_->CreateBr(merge_bb);
-
-                builder_->SetInsertPoint(merge_bb);
-            } else {
-                auto* then_bb  = llvm::BasicBlock::Create(ctx_, "if.then",  current_fn_);
-                auto* merge_bb = llvm::BasicBlock::Create(ctx_, "if.merge", current_fn_);
-                builder_->CreateCondBr(cond, then_bb, merge_bb);
-
-                builder_->SetInsertPoint(then_bb);
-                gen_block(*v.then_block);
-                if (!builder_->GetInsertBlock()->getTerminator()) builder_->CreateBr(merge_bb);
-
-                builder_->SetInsertPoint(merge_bb);
-            }
-
-        } else if constexpr (std::is_same_v<T, WhileStmt>) {
-            auto* cond_bb = llvm::BasicBlock::Create(ctx_, "while.cond", current_fn_);
-            auto* body_bb = llvm::BasicBlock::Create(ctx_, "while.body", current_fn_);
-            auto* exit_bb = llvm::BasicBlock::Create(ctx_, "while.exit", current_fn_);
-
-            builder_->CreateBr(cond_bb);
-
-            builder_->SetInsertPoint(cond_bb);
-            builder_->CreateCondBr(gen_expr(*v.condition), body_bb, exit_bb);
-
-            builder_->SetInsertPoint(body_bb);
-            gen_block(*v.body);
-            if (!builder_->GetInsertBlock()->getTerminator()) builder_->CreateBr(cond_bb);
-
-            builder_->SetInsertPoint(exit_bb);
-
-        } else if constexpr (std::is_same_v<T, ExprStmt>) {
-            gen_expr(*v.expr);
-        }
-    }, s.data);
+    return std::move(module_);
 }

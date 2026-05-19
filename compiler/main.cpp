@@ -3,12 +3,16 @@
 #include "frontend/ast.hpp"
 #include "frontend/typechecker.hpp"
 #include "frontend/dumper.hpp"
+#include "midend/ir.hpp"
+#include "midend/lower_from_ast.hpp"
+#include "midend/passes.hpp"
 #include "backend/codegen.hpp"
 #include "backend/native.hpp"
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/raw_ostream.h>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 
@@ -140,12 +144,14 @@ static std::string stem(const std::string& path) {
 
 static void usage(const char* prog) {
     std::cerr << "Usage: " << prog
-              << " [--tokens] [--ast] [--emit-llvm] [--compile [-o out]] [--dump-stages] <file>\n";
+              << " [--tokens] [--ast] [--emit-mir] [--emit-llvm]"
+              << " [--compile [-o out]] [--dump-stages] <file>\n";
 }
 
 int main(int argc, char** argv) {
     bool        dump_tokens  = false;
     bool        dump_ast     = false;
+    bool        emit_mir     = false;
     bool        emit_llvm    = false;
     bool        do_compile   = false;
     bool        dump_stages  = false;
@@ -156,6 +162,7 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         if      (a == "--tokens")      dump_tokens = true;
         else if (a == "--ast")         dump_ast    = true;
+        else if (a == "--emit-mir")    emit_mir    = true;
         else if (a == "--emit-llvm")   emit_llvm   = true;
         else if (a == "--compile")     do_compile  = true;
         else if (a == "--dump-stages") dump_stages = true;
@@ -164,7 +171,7 @@ int main(int argc, char** argv) {
     }
 
     if (source_path.empty()) { usage(argv[0]); return 1; }
-    if (!dump_tokens && !dump_ast && !emit_llvm && !do_compile && !dump_stages)
+    if (!dump_tokens && !dump_ast && !emit_mir && !emit_llvm && !do_compile && !dump_stages)
         dump_ast = true;
 
     if (do_compile || emit_llvm) init_native_target();
@@ -175,7 +182,8 @@ int main(int argc, char** argv) {
 
     // ── --dump-stages: full JSON pipeline output ──────────────────────────────
     if (dump_stages) {
-        std::string tokens_json, ast_json, ir_json, error_msg;
+        std::string tokens_json, ast_json, mir_raw, mir_opt, ir_json, error_msg;
+        mir::PassReport report;
 
         try {
             Lexer lexer(source);
@@ -189,8 +197,14 @@ int main(int argc, char** argv) {
             TypeChecker tc;
             tc.check(prog);
 
+            mir::Module mir_mod = mir::lower_program(prog);
+            mir_raw = mir::print_module(mir_mod);
+
+            report = mir::default_pipeline().run(mir_mod);
+            mir_opt = mir::print_module(mir_mod);
+
             CodeGen cg;
-            auto module = cg.generate(prog);
+            auto module = cg.generate(mir_mod);
             ir_json     = ir_to_string(*module);
         } catch (const std::exception& e) {
             error_msg = e.what();
@@ -211,11 +225,35 @@ int main(int argc, char** argv) {
             return out + "\"";
         };
 
+        // Aggregated passes → JSON array of {name, changes}.
+        std::string passes_json = "[";
+        for (size_t i = 0; i < report.passes.size(); ++i) {
+            if (i) passes_json += ",";
+            passes_json += "{\"name\":" + js(report.passes[i].name)
+                         + ",\"changes\":" + std::to_string(report.passes[i].changes) + "}";
+        }
+        passes_json += "]";
+
+        // Timeline → JSON array of per-invocation snapshots.
+        std::string steps_json = "[";
+        for (size_t i = 0; i < report.steps.size(); ++i) {
+            if (i) steps_json += ",";
+            steps_json += "{\"name\":"      + js(report.steps[i].name)
+                       +  ",\"iteration\":" + std::to_string(report.steps[i].iteration)
+                       +  ",\"changes\":"   + std::to_string(report.steps[i].changes)
+                       +  ",\"mir_after\":" + js(report.steps[i].mir_after) + "}";
+        }
+        steps_json += "]";
+
         std::cout << "{\n";
-        std::cout << "  \"tokens\":"  << (tokens_json.empty() ? "null" : tokens_json) << ",\n";
-        std::cout << "  \"ast\":"     << (ast_json.empty()    ? "null" : ast_json)    << ",\n";
-        std::cout << "  \"ir\":"      << js(ir_json) << ",\n";
-        std::cout << "  \"error\":"   << js(error_msg) << "\n";
+        std::cout << "  \"tokens\":"        << (tokens_json.empty() ? "null" : tokens_json) << ",\n";
+        std::cout << "  \"ast\":"           << (ast_json.empty()    ? "null" : ast_json)    << ",\n";
+        std::cout << "  \"mir_raw\":"       << js(mir_raw) << ",\n";
+        std::cout << "  \"mir_optimized\":" << js(mir_opt) << ",\n";
+        std::cout << "  \"passes\":"        << passes_json << ",\n";
+        std::cout << "  \"pass_steps\":"    << steps_json << ",\n";
+        std::cout << "  \"ir\":"            << js(ir_json) << ",\n";
+        std::cout << "  \"error\":"         << js(error_msg) << "\n";
         std::cout << "}\n";
         return error_msg.empty() ? 0 : 1;
     }
@@ -244,9 +282,24 @@ int main(int argc, char** argv) {
             print_program(prog);
         }
 
+        // Build MIR once if any later stage needs it; passes run on first
+        // access so --emit-mir always shows the optimized form.
+        std::optional<mir::Module> mir_mod;
+        auto get_mir = [&]() -> mir::Module& {
+            if (!mir_mod) {
+                mir_mod = mir::lower_program(prog);
+                mir::default_pipeline().run(*mir_mod);
+            }
+            return *mir_mod;
+        };
+
+        if (emit_mir) {
+            std::cout << mir::print_module(get_mir());
+        }
+
         if (emit_llvm || do_compile) {
             CodeGen cg;
-            auto module = cg.generate(prog);
+            auto module = cg.generate(get_mir());
 
             std::string err;
             llvm::raw_string_ostream es(err);

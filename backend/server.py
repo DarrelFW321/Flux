@@ -71,13 +71,23 @@ def run_source(req: CompileRequest):
             os.unlink(out_path)
 
 
+EMPTY_STAGES = {
+    "tokens": None, "ast": None,
+    "mir_raw": None, "mir_optimized": None, "passes": [],
+    "ir": None,
+}
+
+
 @app.post("/compile")
 def compile_source(req: CompileRequest):
     """
     Run the flux compiler pipeline on the submitted source code.
-    Returns { tokens, ast, ir, error } as JSON.
-    The tokens and ast fields are already parsed objects (not strings).
-    The ir field is a string.
+
+    Returns the full --dump-stages payload:
+      { tokens, ast, mir_raw, mir_optimized, passes, ir, error }
+
+    tokens and ast are parsed objects; mir_raw/mir_optimized/ir are strings;
+    passes is a list of { name, changes }.
     """
     with tempfile.NamedTemporaryFile(
         suffix=".fl", delete=False, mode="w", encoding="utf-8"
@@ -95,12 +105,11 @@ def compile_source(req: CompileRequest):
         # flux --dump-stages always outputs valid JSON (error field populated on failure)
         if result.stdout.strip():
             return json.loads(result.stdout)
-        # Unexpected: no stdout at all
-        return {"tokens": None, "ast": None, "ir": None,
+        return {**EMPTY_STAGES,
                 "error": result.stderr.strip() or "flux produced no output"}
     except subprocess.TimeoutExpired:
-        return {"tokens": None, "ast": None, "ir": None, "error": "Compilation timed out"}
+        return {**EMPTY_STAGES, "error": "Compilation timed out"}
     except Exception as e:
-        return {"tokens": None, "ast": None, "ir": None, "error": str(e)}
+        return {**EMPTY_STAGES, "error": str(e)}
     finally:
         os.unlink(tmp_path)

@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Editor, { Monaco } from '@monaco-editor/react';
 import { JSONTree } from 'react-json-tree';
 import SyntaxHighlighter from 'react-syntax-highlighter';
 import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
+import { diffLines } from 'diff';
 import { AstGraph } from './AstGraph';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -14,14 +15,31 @@ interface Token {
   col: number;
 }
 
+interface PassResult {
+  name: string;
+  changes: number;
+}
+
+interface PassStep {
+  name: string;
+  iteration: number;
+  changes: number;
+  mir_after: string;
+}
+
 interface FrontendResult {
   tokens: Token[] | null;
   ast: any | null;
+  mir_raw: string | null;
+  mir_optimized: string | null;
+  passes: PassResult[] | null;
+  pass_steps: PassStep[] | null;
   error: string | null;
 }
 
-type Tab = 'tokens' | 'ast' | 'ir' | 'output';
+type Tab = 'tokens' | 'ast' | 'mir' | 'ir' | 'output';
 type AstView = 'graph' | 'json';
+type MirView = 'optimized' | 'raw' | 'diff';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -32,8 +50,14 @@ const DEFAULT_SOURCE = `fn scale(a: float[4], k: float) -> float[4] {
 let x: float[4] = [1.0, 2.0, 3.0, 4.0];
 let y: float[4] = scale(x, 2.0);
 
+// Optimization passes will fold these at compile time.
+let n: int     = 2 + 3 * 4;
+let same: int  = n + 0;
+let zero: int  = n * 0;
+
 print(dot(x, y));
-print(y[2]);`;
+print(y[2]);
+print(n + same + zero);`;
 
 const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL ?? '';
 
@@ -97,9 +121,13 @@ const beforeEditorMount = (monaco: Monaco) => {
 
 export default function App() {
   const [source, setSource]           = useState(DEFAULT_SOURCE);
-  const [result, setResult]           = useState<FrontendResult>({ tokens: null, ast: null, error: null });
+  const [result, setResult]           = useState<FrontendResult>({
+    tokens: null, ast: null, mir_raw: null, mir_optimized: null,
+    passes: null, pass_steps: null, error: null,
+  });
   const [activeTab, setActiveTab]     = useState<Tab>('tokens');
   const [astView, setAstView]         = useState<AstView>('graph');
+  const [mirView, setMirView]         = useState<MirView>('optimized');
   const [ir, setIr]                   = useState('');
   const [irLoading, setIrLoading]     = useState(false);
   const [irError, setIrError]         = useState('');
@@ -124,7 +152,10 @@ export default function App() {
       const raw = fluxRef.current.compile_frontend(src);
       setResult(JSON.parse(raw) as FrontendResult);
     } catch (e) {
-      setResult({ tokens: null, ast: null, error: String(e) });
+      setResult({
+        tokens: null, ast: null, mir_raw: null, mir_optimized: null,
+        passes: null, pass_steps: null, error: String(e),
+      });
     }
   }, []);
 
@@ -220,7 +251,7 @@ export default function App() {
         {/* ── Output panel ──────────────────────────────────────────────── */}
         <section className="pane output-pane">
           <div className="tab-bar">
-            {(['tokens', 'ast', 'ir', 'output'] as Tab[]).map(t => (
+            {(['tokens', 'ast', 'mir', 'ir', 'output'] as Tab[]).map(t => (
               <button
                 key={t}
                 className={`tab-btn ${activeTab === t ? 'active' : ''}`}
@@ -295,6 +326,19 @@ export default function App() {
               </div>
             )}
 
+            {/* ── MIR ── */}
+            {activeTab === 'mir' && (
+              <MirPane
+                wasmReady={wasmReady}
+                raw={result.mir_raw}
+                optimized={result.mir_optimized}
+                passes={result.passes}
+                steps={result.pass_steps}
+                view={mirView}
+                onViewChange={setMirView}
+              />
+            )}
+
             {/* ── IR ── */}
             {activeTab === 'ir' && (
               <div className="action-pane">
@@ -306,8 +350,8 @@ export default function App() {
 
                 {irLoading && (
                   <div className="notice">
-                    <span className="spinner" /> Waking up the backend — Render's free
-                    tier can take ~30s on the first request.
+                    <span className="spinner" /> Generating LLVM IR. Cold starts can
+                    add ~30s; subsequent requests are instant.
                   </div>
                 )}
 
@@ -353,7 +397,8 @@ export default function App() {
 
                 {runLoading && (
                   <div className="notice">
-                    <span className="spinner" /> Compiling and running on the server…
+                    <span className="spinner" /> Compiling and executing. Cold starts
+                    can add ~30s; subsequent runs are instant.
                   </div>
                 )}
 
@@ -379,4 +424,211 @@ export default function App() {
 
 function Placeholder({ children }: { children: React.ReactNode }) {
   return <div className="placeholder">{children}</div>;
+}
+
+// ── MIR pane ────────────────────────────────────────────────────────────────
+
+interface MirPaneProps {
+  wasmReady: boolean;
+  raw: string | null;
+  optimized: string | null;
+  passes: PassResult[] | null;
+  steps: PassStep[] | null;
+  view: MirView;
+  onViewChange: (v: MirView) => void;
+}
+
+function MirPane({
+  wasmReady, raw, optimized, passes, steps, view, onViewChange,
+}: MirPaneProps) {
+  return (
+    <div className="ast-pane">
+      <div className="subtab-bar mir-subtab-bar">
+        <div className="subtab-group">
+          {(['optimized', 'raw', 'diff'] as MirView[]).map(v => (
+            <button
+              key={v}
+              className={`subtab-btn ${view === v ? 'active' : ''}`}
+              onClick={() => onViewChange(v)}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+        {passes && passes.length > 0 && (
+          <div className="pass-chips" title="optimization passes applied">
+            {passes.map((p, i) => (
+              <span key={p.name + i} className={`pass-chip ${p.changes ? 'changed' : ''}`}>
+                {p.name}
+                <span className="pass-chip-count">{p.changes}</span>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {!wasmReady ? (
+        <Placeholder>Loading wasm…</Placeholder>
+      ) : !raw ? (
+        <Placeholder>
+          Type something to see the mid-level IR.
+          <br />
+          <span className="dim">
+            FluxIR sits between the AST and LLVM. Whole-array ops appear as
+            single instructions; optimization passes run before LLVM codegen.
+          </span>
+        </Placeholder>
+      ) : view === 'diff' ? (
+        <MirDiff raw={raw} steps={steps ?? []} />
+      ) : (
+        <div className="scroll-area mir-pane">
+          <SyntaxHighlighter
+            language="llvm"
+            style={atomOneDark}
+            customStyle={{
+              margin: 0,
+              padding: 16,
+              background: 'transparent',
+              fontSize: 12.5,
+              fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
+              lineHeight: 1.55,
+            }}
+          >
+            {view === 'optimized' ? (optimized ?? raw) : raw}
+          </SyntaxHighlighter>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Step-driven diff ────────────────────────────────────────────────────────
+
+interface MirDiffProps {
+  raw: string;
+  steps: PassStep[];
+}
+
+function MirDiff({ raw, steps }: MirDiffProps) {
+  // Default selection: the last step that actually produced changes, so the
+  // diff is non-empty on first load. Fall back to the last step.
+  const defaultIdx = useMemo(() => {
+    for (let i = steps.length - 1; i >= 0; --i) if (steps[i].changes > 0) return i;
+    return steps.length - 1;
+  }, [steps]);
+
+  const [selected, setSelected] = useState(defaultIdx);
+  // Re-clamp when the program changes (steps array reference changes).
+  useEffect(() => { setSelected(defaultIdx); }, [defaultIdx]);
+
+  const totalChanges = useMemo(
+    () => steps.reduce((s, p) => s + p.changes, 0),
+    [steps],
+  );
+
+  if (steps.length === 0) {
+    return <Placeholder>No passes ran.</Placeholder>;
+  }
+  if (totalChanges === 0) {
+    return (
+      <Placeholder>
+        Optimization passes produced no changes for this program.
+        <br />
+        <span className="dim">Try adding `let x = 2 + 3 * 4;` or `let y = a * 0;`.</span>
+      </Placeholder>
+    );
+  }
+
+  const safeIdx = Math.min(Math.max(selected, 0), steps.length - 1);
+  const current = steps[safeIdx];
+  const before  = safeIdx === 0 ? raw : steps[safeIdx - 1].mir_after;
+  const after   = current.mir_after;
+
+  return (
+    <div className="mir-diff-container">
+      <PassTimeline steps={steps} selectedIdx={safeIdx} onSelect={setSelected} />
+      <div className="diff-header">
+        <span className="diff-header-label">
+          step {safeIdx + 1} / {steps.length} —{' '}
+          <strong>{current.name}</strong>{' '}
+          <span className="dim">iter {current.iteration}</span>
+        </span>
+        <span className={`diff-header-changes ${current.changes ? 'has-changes' : 'no-changes'}`}>
+          {current.changes} change{current.changes === 1 ? '' : 's'}
+        </span>
+      </div>
+      {current.changes === 0 ? (
+        <div className="diff-empty">
+          <span className="dim">This pass made no changes at this iteration.</span>
+        </div>
+      ) : (
+        <DiffBody before={before} after={after} />
+      )}
+    </div>
+  );
+}
+
+function PassTimeline({
+  steps, selectedIdx, onSelect,
+}: { steps: PassStep[]; selectedIdx: number; onSelect: (i: number) => void }) {
+  return (
+    <div className="pass-timeline">
+      <button
+        className="timeline-nav"
+        onClick={() => onSelect(Math.max(selectedIdx - 1, 0))}
+        disabled={selectedIdx === 0}
+        aria-label="previous pass"
+      >
+        ‹
+      </button>
+      <div className="timeline-track">
+        {steps.map((step, idx) => {
+          const isActive = idx === selectedIdx;
+          const changed  = step.changes > 0;
+          return (
+            <button
+              key={idx}
+              className={`timeline-step ${isActive ? 'active' : ''} ${changed ? 'changed' : 'noop'}`}
+              onClick={() => onSelect(idx)}
+              title={`${step.name} · iteration ${step.iteration} · ${step.changes} change${step.changes === 1 ? '' : 's'}`}
+            >
+              <span className="timeline-dot" />
+              <span className="timeline-name">{step.name}</span>
+              <span className="timeline-count">{step.changes}</span>
+            </button>
+          );
+        })}
+      </div>
+      <button
+        className="timeline-nav"
+        onClick={() => onSelect(Math.min(selectedIdx + 1, steps.length - 1))}
+        disabled={selectedIdx === steps.length - 1}
+        aria-label="next pass"
+      >
+        ›
+      </button>
+    </div>
+  );
+}
+
+function DiffBody({ before, after }: { before: string; after: string }) {
+  const parts = useMemo(() => diffLines(before, after), [before, after]);
+  return (
+    <div className="scroll-area mir-diff">
+      <pre>
+        {parts.flatMap((part, partIdx) => {
+          const lines = part.value.split('\n');
+          if (lines.length && lines[lines.length - 1] === '') lines.pop();
+          const cls    = part.added ? 'added' : part.removed ? 'removed' : 'context';
+          const prefix = part.added ? '+' : part.removed ? '−' : ' ';
+          return lines.map((line, i) => (
+            <div key={`${partIdx}-${i}`} className={`diff-line ${cls}`}>
+              <span className="diff-marker">{prefix}</span>
+              <span className="diff-text">{line || '\u00a0'}</span>
+            </div>
+          ));
+        })}
+      </pre>
+    </div>
+  );
 }
