@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import Editor from '@monaco-editor/react';
+import Editor, { Monaco } from '@monaco-editor/react';
 import { JSONTree } from 'react-json-tree';
 import SyntaxHighlighter from 'react-syntax-highlighter';
-import { vs2015 } from 'react-syntax-highlighter/dist/esm/styles/hljs';
+import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
+import { AstGraph } from './AstGraph';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -15,11 +16,12 @@ interface Token {
 
 interface FrontendResult {
   tokens: Token[] | null;
-  ast: object | null;
+  ast: any | null;
   error: string | null;
 }
 
 type Tab = 'tokens' | 'ast' | 'ir' | 'output';
+type AstView = 'graph' | 'json';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -37,53 +39,87 @@ print(dot(100));`;
 
 const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL ?? '';
 
-// Dark theme for react-json-tree
+// react-json-tree theme tuned to match the minimal dark palette.
 const JSON_THEME = {
   scheme: 'flux',
-  base00: '#1e1e1e',
-  base01: '#252526',
-  base02: '#2d2d2d',
-  base03: '#555',
-  base04: '#aaa',
-  base05: '#d4d4d4',
-  base06: '#e0e0e0',
-  base07: '#fff',
-  base08: '#f44747',
-  base09: '#ce9178',
-  base0A: '#dcdcaa',
-  base0B: '#6a9955',
-  base0C: '#9cdcfe',
-  base0D: '#569cd6',
-  base0E: '#c586c0',
-  base0F: '#d7ba7d',
+  base00: 'transparent',
+  base01: '#18181b',
+  base02: '#27272a',
+  base03: '#52525b',
+  base04: '#71717a',
+  base05: '#a1a1aa',
+  base06: '#d4d4d8',
+  base07: '#fafafa',
+  base08: '#f87171',
+  base09: '#fbbf24',
+  base0A: '#fcd34d',
+  base0B: '#86efac',
+  base0C: '#67e8f9',
+  base0D: '#93c5fd',
+  base0E: '#c4b5fd',
+  base0F: '#fbcfe8',
+};
+
+// Custom Monaco theme — flat, matches the rest of the surface.
+const beforeEditorMount = (monaco: Monaco) => {
+  monaco.editor.defineTheme('flux-dark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [
+      { token: 'keyword',    foreground: 'c4b5fd' },
+      { token: 'number',     foreground: 'fbbf24' },
+      { token: 'string',     foreground: '86efac' },
+      { token: 'comment',    foreground: '52525b', fontStyle: 'italic' },
+      { token: 'identifier', foreground: 'e4e4e7' },
+      { token: 'type',       foreground: '93c5fd' },
+    ],
+    colors: {
+      'editor.background':              '#09090b',
+      'editor.foreground':              '#e4e4e7',
+      'editorLineNumber.foreground':    '#3f3f46',
+      'editorLineNumber.activeForeground': '#a1a1aa',
+      'editor.lineHighlightBackground': '#111114',
+      'editor.lineHighlightBorder':     '#11111400',
+      'editor.selectionBackground':     '#27272a',
+      'editor.inactiveSelectionBackground': '#1f1f23',
+      'editorCursor.foreground':        '#fafafa',
+      'editorGutter.background':        '#09090b',
+      'editorIndentGuide.background1':  '#18181b',
+      'editorIndentGuide.activeBackground1': '#27272a',
+      'scrollbarSlider.background':         '#27272a80',
+      'scrollbarSlider.hoverBackground':    '#3f3f4680',
+      'scrollbarSlider.activeBackground':   '#52525b80',
+      'editorWidget.background':       '#111114',
+      'editorWidget.border':           '#1f1f23',
+    },
+  });
 };
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [source, setSource]       = useState(DEFAULT_SOURCE);
-  const [result, setResult]       = useState<FrontendResult>({ tokens: null, ast: null, error: null });
-  const [activeTab, setActiveTab] = useState<Tab>('tokens');
+  const [source, setSource]           = useState(DEFAULT_SOURCE);
+  const [result, setResult]           = useState<FrontendResult>({ tokens: null, ast: null, error: null });
+  const [activeTab, setActiveTab]     = useState<Tab>('tokens');
+  const [astView, setAstView]         = useState<AstView>('graph');
   const [ir, setIr]                   = useState('');
   const [irLoading, setIrLoading]     = useState(false);
   const [irError, setIrError]         = useState('');
   const [output, setOutput]           = useState('');
   const [runLoading, setRunLoading]   = useState(false);
   const [runError, setRunError]       = useState('');
-  const [wasmReady, setWasmReady] = useState(false);
+  const [wasmReady, setWasmReady]     = useState(false);
 
-  const fluxRef    = useRef<FluxWasm | null>(null);
-  const debounce   = useRef<ReturnType<typeof setTimeout>>();
+  const fluxRef  = useRef<FluxWasm | null>(null);
+  const debounce = useRef<ReturnType<typeof setTimeout>>();
 
-  // Load WASM module once on mount.
   useEffect(() => {
-    if (typeof FluxModule === 'undefined') return; // not built yet
+    if (typeof FluxModule === 'undefined') return;
     FluxModule()
       .then(m => { fluxRef.current = m; setWasmReady(true); })
       .catch(() => {/* WASM unavailable in local dev without a build */});
   }, []);
 
-  // Run frontend pipeline (debounced 300 ms) whenever source changes.
   const runFrontend = useCallback((src: string) => {
     if (!fluxRef.current) return;
     try {
@@ -101,14 +137,11 @@ export default function App() {
     return () => clearTimeout(debounce.current);
   }, [source, wasmReady, runFrontend]);
 
-  // Run program on Render backend.
   const runProgram = async () => {
     if (!BACKEND_URL) { setRunError('VITE_BACKEND_URL is not set.'); return; }
-    setRunLoading(true);
-    setRunError('');
-    setOutput('');
+    setRunLoading(true); setRunError(''); setOutput('');
     try {
-      const res  = await fetch(`${BACKEND_URL}/run`, {
+      const res = await fetch(`${BACKEND_URL}/run`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ source }),
@@ -123,14 +156,11 @@ export default function App() {
     }
   };
 
-  // Fetch IR from Render backend.
   const fetchIR = async () => {
     if (!BACKEND_URL) { setIrError('VITE_BACKEND_URL is not set.'); return; }
-    setIrLoading(true);
-    setIrError('');
-    setIr('');
+    setIrLoading(true); setIrError(''); setIr('');
     try {
-      const res  = await fetch(`${BACKEND_URL}/compile`, {
+      const res = await fetch(`${BACKEND_URL}/compile`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ source }),
@@ -145,35 +175,52 @@ export default function App() {
     }
   };
 
-  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="app">
       <header className="header">
-        <span className="logo">FLUX</span>
-        <span className="subtitle">compiler pipeline visualizer</span>
-        {!wasmReady && <span className="badge warn">WASM not loaded</span>}
+        <div className="brand">
+          <span className="brand-mark">flux</span>
+          <span className="brand-sep">/</span>
+          <span className="brand-sub">compiler pipeline</span>
+        </div>
+        <div className="header-meta">
+          <span className={`status-dot ${wasmReady ? 'ok' : 'warn'}`} aria-hidden />
+          <span>{wasmReady ? 'wasm ready' : 'wasm loading'}</span>
+        </div>
       </header>
 
-      <div className="workspace">
-        {/* ── Editor ── */}
-        <div className="editor-pane">
+      <main className="workspace">
+        {/* ── Editor ────────────────────────────────────────────────────── */}
+        <section className="pane editor-pane">
           <Editor
             height="100%"
             defaultLanguage="rust"
-            theme="vs-dark"
+            theme="flux-dark"
             value={source}
+            beforeMount={beforeEditorMount}
             onChange={v => setSource(v ?? '')}
             options={{
-              fontSize: 14,
+              fontSize: 13,
+              fontFamily: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace",
+              fontLigatures: true,
               minimap: { enabled: false },
               scrollBeyondLastLine: false,
               wordWrap: 'on',
+              padding: { top: 16, bottom: 16 },
+              renderLineHighlight: 'gutter',
+              smoothScrolling: true,
+              cursorBlinking: 'smooth',
+              cursorSmoothCaretAnimation: 'on',
+              guides: { indentation: false },
+              overviewRulerLanes: 0,
+              hideCursorInOverviewRuler: true,
+              scrollbar: { vertical: 'auto', horizontal: 'auto', verticalScrollbarSize: 10 },
             }}
           />
-        </div>
+        </section>
 
-        {/* ── Output ── */}
-        <div className="output-pane">
+        {/* ── Output panel ──────────────────────────────────────────────── */}
+        <section className="pane output-pane">
           <div className="tab-bar">
             {(['tokens', 'ast', 'ir', 'output'] as Tab[]).map(t => (
               <button
@@ -181,20 +228,18 @@ export default function App() {
                 className={`tab-btn ${activeTab === t ? 'active' : ''}`}
                 onClick={() => setActiveTab(t)}
               >
-                {t.toUpperCase()}
+                {t}
               </button>
             ))}
           </div>
 
           <div className="panel-body">
-            {result.error && (
-              <div className="error-banner">{result.error}</div>
-            )}
+            {result.error && <div className="error-banner">{result.error}</div>}
 
             {/* ── Tokens ── */}
             {activeTab === 'tokens' && (
               !wasmReady
-                ? <Placeholder>Loading WASM…</Placeholder>
+                ? <Placeholder>Loading wasm…</Placeholder>
                 : result.tokens
                   ? (
                     <div className="scroll-area">
@@ -206,9 +251,9 @@ export default function App() {
                           {result.tokens.map((tok, i) => (
                             <tr key={i}>
                               <td className="tok-type">{tok.type}</td>
-                              <td className="tok-lex">{tok.lexeme || <em>∅</em>}</td>
-                              <td>{tok.line}</td>
-                              <td>{tok.col}</td>
+                              <td className="tok-lex">{tok.lexeme || <span className="dim">·</span>}</td>
+                              <td className="num">{tok.line}</td>
+                              <td className="num">{tok.col}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -220,37 +265,97 @@ export default function App() {
 
             {/* ── AST ── */}
             {activeTab === 'ast' && (
-              !wasmReady
-                ? <Placeholder>Loading WASM…</Placeholder>
-                : result.ast
-                  ? (
-                    <div className="scroll-area ast-tree">
-                      <JSONTree
-                        data={result.ast}
-                        theme={JSON_THEME}
-                        invertTheme={false}
-                        hideRoot={false}
-                        shouldExpandNodeInitially={(_, __, level) => level < 2}
-                      />
-                    </div>
-                  )
-                  : <Placeholder>Type something to see the AST.</Placeholder>
+              <div className="ast-pane">
+                <div className="subtab-bar">
+                  <button
+                    className={`subtab-btn ${astView === 'graph' ? 'active' : ''}`}
+                    onClick={() => setAstView('graph')}
+                  >Graph</button>
+                  <button
+                    className={`subtab-btn ${astView === 'json' ? 'active' : ''}`}
+                    onClick={() => setAstView('json')}
+                  >JSON</button>
+                </div>
+                {!wasmReady
+                  ? <Placeholder>Loading wasm…</Placeholder>
+                  : result.ast
+                    ? (astView === 'graph'
+                        ? <AstGraph ast={result.ast} />
+                        : (
+                          <div className="scroll-area ast-json">
+                            <JSONTree
+                              data={result.ast}
+                              theme={JSON_THEME}
+                              invertTheme={false}
+                              hideRoot={false}
+                              shouldExpandNodeInitially={(_, __, level) => level < 2}
+                            />
+                          </div>
+                        ))
+                    : <Placeholder>Type something to see the AST.</Placeholder>
+                }
+              </div>
+            )}
+
+            {/* ── IR ── */}
+            {activeTab === 'ir' && (
+              <div className="action-pane">
+                <div className="action-bar">
+                  <button className="action-btn" onClick={fetchIR} disabled={irLoading}>
+                    {irLoading ? 'Generating…' : 'Generate IR'}
+                  </button>
+                </div>
+
+                {irLoading && (
+                  <div className="notice">
+                    <span className="spinner" /> Waking up the backend — Render's free
+                    tier can take ~30s on the first request.
+                  </div>
+                )}
+
+                {irError && <div className="error-banner">{irError}</div>}
+
+                {ir && (
+                  <div className="scroll-area">
+                    <SyntaxHighlighter
+                      language="llvm"
+                      style={atomOneDark}
+                      customStyle={{
+                        margin: 0,
+                        padding: 16,
+                        background: 'transparent',
+                        fontSize: 12.5,
+                        fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
+                        lineHeight: 1.55,
+                      }}
+                    >
+                      {ir}
+                    </SyntaxHighlighter>
+                  </div>
+                )}
+
+                {!ir && !irLoading && !irError && (
+                  <Placeholder>
+                    Generate IR to compile via the backend.
+                    <br />
+                    <span className="dim">Tokens and AST update instantly in your browser.</span>
+                  </Placeholder>
+                )}
+              </div>
             )}
 
             {/* ── Output ── */}
             {activeTab === 'output' && (
-              <div className="ir-pane">
-                <button
-                  className="fetch-btn"
-                  onClick={runProgram}
-                  disabled={runLoading}
-                >
-                  {runLoading ? 'Running…' : '▶ Run'}
-                </button>
+              <div className="action-pane">
+                <div className="action-bar">
+                  <button className="action-btn" onClick={runProgram} disabled={runLoading}>
+                    {runLoading ? 'Running…' : 'Run'}
+                  </button>
+                </div>
 
                 {runLoading && (
-                  <div className="cold-start">
-                    <span className="spinner" /> Compiling and running on server…
+                  <div className="notice">
+                    <span className="spinner" /> Compiling and running on the server…
                   </div>
                 )}
 
@@ -263,55 +368,13 @@ export default function App() {
                 )}
 
                 {!output && !runLoading && !runError && (
-                  <Placeholder>Click "Run" to compile and execute on the backend.</Placeholder>
-                )}
-              </div>
-            )}
-
-            {/* ── IR ── */}
-            {activeTab === 'ir' && (
-              <div className="ir-pane">
-                <button
-                  className="fetch-btn"
-                  onClick={fetchIR}
-                  disabled={irLoading}
-                >
-                  {irLoading ? 'Generating…' : '⚡ Generate IR'}
-                </button>
-
-                {irLoading && (
-                  <div className="cold-start">
-                    <span className="spinner" /> Waking up server — Render free tier
-                    may take ~30 s on the first request.
-                  </div>
-                )}
-
-                {irError && <div className="error-banner">{irError}</div>}
-
-                {ir && (
-                  <div className="scroll-area">
-                    <SyntaxHighlighter
-                      language="llvm"
-                      style={vs2015}
-                      customStyle={{ margin: 0, borderRadius: 0, fontSize: 13 }}
-                    >
-                      {ir}
-                    </SyntaxHighlighter>
-                  </div>
-                )}
-
-                {!ir && !irLoading && !irError && (
-                  <Placeholder>
-                    Click "Generate IR" to compile via the backend.
-                    <br />
-                    Tokens and AST update instantly (client-side WASM).
-                  </Placeholder>
+                  <Placeholder>Run to compile and execute on the backend.</Placeholder>
                 )}
               </div>
             )}
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
     </div>
   );
 }
