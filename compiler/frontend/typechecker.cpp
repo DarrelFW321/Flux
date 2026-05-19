@@ -27,40 +27,27 @@ Type TypeChecker::lookup(const std::string& name, int line, int col) const {
         "] Type error: " + msg);
 }
 
-Type TypeChecker::type_from_name(const std::string& name) {
-    if (name == "int")   return Type::Int;
-    if (name == "float") return Type::Float;
-    if (name == "bool")  return Type::Bool;
-    if (name == "void")  return Type::Void;
-    throw std::logic_error("unknown type: " + name);
-}
-
-std::string TypeChecker::type_name(Type t) {
-    switch (t) {
-        case Type::Int:   return "int";
-        case Type::Float: return "float";
-        case Type::Bool:  return "bool";
-        case Type::Void:  return "void";
-    }
-    return "?";
-}
-
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 void TypeChecker::check(const Program& prog) {
     first_pass(prog);
+
+    // Functions get their own scope inside check_fn.
+    // Top-level statements share a single global scope (so `let x` declared at
+    // file scope is visible to subsequent statements).
+    bool global_scope_open = false;
     for (const auto& item : prog.items) {
-        std::visit([this](const auto& v) {
+        std::visit([this, &global_scope_open](const auto& v) {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, FnDecl>) {
                 check_fn(v);
             } else if constexpr (std::is_same_v<T, std::unique_ptr<Stmt>>) {
-                push_scope();
+                if (!global_scope_open) { push_scope(); global_scope_open = true; }
                 check_stmt(*v);
-                pop_scope();
             }
         }, item);
     }
+    if (global_scope_open) pop_scope();
 }
 
 // First pass: collect all function signatures so forward calls are valid.
@@ -70,21 +57,33 @@ void TypeChecker::first_pass(const Program& prog) {
             if (functions_.count(fn->name))
                 error("function '" + fn->name + "' already defined", fn->line, fn->col);
             FnSignature sig;
-            sig.return_type = type_from_name(fn->return_type);
+            sig.return_type = Type::parse(fn->return_type);
             for (const auto& p : fn->params)
-                sig.param_types.push_back(type_from_name(p.type_name));
+                sig.param_types.push_back(Type::parse(p.type_name));
             functions_[fn->name] = std::move(sig);
         }
     }
 }
 
+// Extract a compile-time integer value from a const-expression, if possible.
+// Handles plain literals and unary-minus literals (`-3`).
+static std::optional<int64_t> const_int(const Expr& e) {
+    if (auto* lit = std::get_if<IntLitExpr>(&e.data))
+        return lit->value;
+    if (auto* u = std::get_if<UnaryExpr>(&e.data); u && u->op == "-") {
+        if (auto* lit = std::get_if<IntLitExpr>(&u->operand->data))
+            return -lit->value;
+    }
+    return std::nullopt;
+}
+
 // ── Functions ─────────────────────────────────────────────────────────────────
 
 void TypeChecker::check_fn(const FnDecl& fn) {
-    current_return_type_ = type_from_name(fn.return_type);
+    current_return_type_ = Type::parse(fn.return_type);
     push_scope();
     for (const auto& p : fn.params)
-        declare(p.name, type_from_name(p.type_name), fn.line, fn.col);
+        declare(p.name, Type::parse(p.type_name), fn.line, fn.col);
     check_block(*fn.body);
     pop_scope();
 }
@@ -102,42 +101,67 @@ void TypeChecker::check_stmt(const Stmt& s) {
         using T = std::decay_t<decltype(v)>;
 
         if constexpr (std::is_same_v<T, LetStmt>) {
-            Type decl_t = type_from_name(v.type_name);
+            Type decl_t = Type::parse(v.type_name);
             Type init_t = check_expr(*v.init);
             if (decl_t != init_t)
-                error("let '" + v.name + "': declared " + type_name(decl_t) +
-                      " but initializer is " + type_name(init_t), s.line, s.col);
+                error("let '" + v.name + "': declared " + decl_t.name() +
+                      " but initializer is " + init_t.name(), s.line, s.col);
             declare(v.name, decl_t, s.line, s.col);
 
         } else if constexpr (std::is_same_v<T, AssignStmt>) {
             Type var_t = lookup(v.name, s.line, s.col);
             Type val_t = check_expr(*v.value);
+            if (var_t.is_array())
+                error("cannot assign to whole array '" + v.name +
+                      "'; assign per-element with " + v.name + "[i] = ...", s.line, s.col);
             if (var_t != val_t)
-                error("assignment to '" + v.name + "': expected " + type_name(var_t) +
-                      ", got " + type_name(val_t), s.line, s.col);
+                error("assignment to '" + v.name + "': expected " + var_t.name() +
+                      ", got " + val_t.name(), s.line, s.col);
+
+        } else if constexpr (std::is_same_v<T, IndexAssignStmt>) {
+            Type arr_t = check_expr(*v.array);
+            if (!arr_t.is_array())
+                error("indexed assignment target must be an array, got " + arr_t.name(),
+                      s.line, s.col);
+            Type idx_t = check_expr(*v.index);
+            if (idx_t != Type::scalar(Type::Kind::Int))
+                error("array index must be int, got " + idx_t.name(), s.line, s.col);
+            if (auto ci = const_int(*v.index)) {
+                if (*ci < 0 || *ci >= arr_t.array_size)
+                    error("index " + std::to_string(*ci) + " out of bounds for " +
+                          arr_t.name() + " (size " + std::to_string(arr_t.array_size) + ")",
+                          s.line, s.col);
+            }
+            Type val_t = check_expr(*v.value);
+            if (val_t != arr_t.elem())
+                error("element assignment: array holds " + arr_t.elem().name() +
+                      " but value is " + val_t.name(), s.line, s.col);
 
         } else if constexpr (std::is_same_v<T, ReturnStmt>) {
             Type ret_t = check_expr(*v.value);
             if (ret_t != current_return_type_)
-                error("return type mismatch: expected " + type_name(current_return_type_) +
-                      ", got " + type_name(ret_t), s.line, s.col);
+                error("return type mismatch: expected " + current_return_type_.name() +
+                      ", got " + ret_t.name(), s.line, s.col);
 
         } else if constexpr (std::is_same_v<T, PrintStmt>) {
             Type t = check_expr(*v.value);
-            if (t == Type::Void)
+            if (t.is_array())
+                error("cannot print an array directly; print elements individually",
+                      s.line, s.col);
+            if (t.kind == Type::Kind::Void)
                 error("cannot print a void expression", s.line, s.col);
 
         } else if constexpr (std::is_same_v<T, IfStmt>) {
             Type cond_t = check_expr(*v.condition);
-            if (cond_t != Type::Bool)
-                error("if condition must be bool, got " + type_name(cond_t), s.line, s.col);
+            if (cond_t != Type::scalar(Type::Kind::Bool))
+                error("if condition must be bool, got " + cond_t.name(), s.line, s.col);
             check_block(*v.then_block);
             if (v.else_block) check_block(**v.else_block);
 
         } else if constexpr (std::is_same_v<T, WhileStmt>) {
             Type cond_t = check_expr(*v.condition);
-            if (cond_t != Type::Bool)
-                error("while condition must be bool, got " + type_name(cond_t), s.line, s.col);
+            if (cond_t != Type::scalar(Type::Kind::Bool))
+                error("while condition must be bool, got " + cond_t.name(), s.line, s.col);
             check_block(*v.body);
 
         } else if constexpr (std::is_same_v<T, ExprStmt>) {
@@ -146,23 +170,89 @@ void TypeChecker::check_stmt(const Stmt& s) {
     }, s.data);
 }
 
+// ── Built-ins: sum(arr), dot(a, b) ────────────────────────────────────────────
+
+Type TypeChecker::check_builtin_call(const CallExpr& v, int line, int col) const {
+    if (v.callee == "sum") {
+        if (v.args.size() != 1)
+            error("sum() takes exactly 1 argument, got " +
+                  std::to_string(v.args.size()), line, col);
+        Type a = check_expr(*v.args[0]);
+        if (!a.is_array())
+            error("sum() requires an array, got " + a.name(), line, col);
+        if (a.kind == Type::Kind::Bool)
+            error("sum() is not defined for bool arrays", line, col);
+        return a.elem();
+    }
+    if (v.callee == "dot") {
+        if (v.args.size() != 2)
+            error("dot() takes exactly 2 arguments, got " +
+                  std::to_string(v.args.size()), line, col);
+        Type a = check_expr(*v.args[0]);
+        Type b = check_expr(*v.args[1]);
+        if (!a.is_array() || !b.is_array())
+            error("dot() requires two arrays, got " +
+                  a.name() + " and " + b.name(), line, col);
+        if (a != b)
+            error("dot() argument types differ: " + a.name() +
+                  " vs " + b.name(), line, col);
+        if (a.kind == Type::Kind::Bool)
+            error("dot() is not defined for bool arrays", line, col);
+        return a.elem();
+    }
+    return Type::scalar(Type::Kind::Void); // sentinel: not a built-in
+}
+
 // ── Expression type inference ─────────────────────────────────────────────────
 
 Type TypeChecker::check_expr(const Expr& e) const {
     return std::visit([this, &e](const auto& v) -> Type {
         using T = std::decay_t<decltype(v)>;
 
-        if constexpr (std::is_same_v<T, IntLitExpr>)   return Type::Int;
-        if constexpr (std::is_same_v<T, FloatLitExpr>) return Type::Float;
-        if constexpr (std::is_same_v<T, BoolLitExpr>)  return Type::Bool;
+        if constexpr (std::is_same_v<T, IntLitExpr>)   return Type::scalar(Type::Kind::Int);
+        if constexpr (std::is_same_v<T, FloatLitExpr>) return Type::scalar(Type::Kind::Float);
+        if constexpr (std::is_same_v<T, BoolLitExpr>)  return Type::scalar(Type::Kind::Bool);
 
         if constexpr (std::is_same_v<T, IdentExpr>)
             return lookup(v.name, e.line, e.col);
 
+        if constexpr (std::is_same_v<T, ArrayLitExpr>) {
+            if (v.elements.empty())
+                error("empty array literal '[]' is not allowed", e.line, e.col);
+            Type first = check_expr(*v.elements[0]);
+            if (!first.is_scalar())
+                error("array elements must be scalar, got " + first.name(), e.line, e.col);
+            for (size_t i = 1; i < v.elements.size(); ++i) {
+                Type t = check_expr(*v.elements[i]);
+                if (t != first)
+                    error("mixed element types in array literal: " +
+                          first.name() + " and " + t.name(), e.line, e.col);
+            }
+            return Type::array(first.kind, (int)v.elements.size());
+        }
+
+        if constexpr (std::is_same_v<T, IndexExpr>) {
+            Type a = check_expr(*v.array);
+            if (!a.is_array())
+                error("cannot index non-array value of type " + a.name(), e.line, e.col);
+            Type i = check_expr(*v.index);
+            if (i != Type::scalar(Type::Kind::Int))
+                error("array index must be int, got " + i.name(), e.line, e.col);
+            if (auto ci = const_int(*v.index)) {
+                if (*ci < 0 || *ci >= a.array_size)
+                    error("index " + std::to_string(*ci) + " out of bounds for " +
+                          a.name() + " (size " + std::to_string(a.array_size) + ")",
+                          e.line, e.col);
+            }
+            return a.elem();
+        }
+
         if constexpr (std::is_same_v<T, UnaryExpr>) {
             Type operand_t = check_expr(*v.operand);
             if (v.op == "-") {
-                if (operand_t != Type::Int && operand_t != Type::Float)
+                if (operand_t.is_array())
+                    error("unary '-' on arrays is not supported yet", e.line, e.col);
+                if (operand_t.kind != Type::Kind::Int && operand_t.kind != Type::Kind::Float)
                     error("unary '-' requires int or float", e.line, e.col);
                 return operand_t;
             }
@@ -177,26 +267,61 @@ Type TypeChecker::check_expr(const Expr& e) const {
             const bool is_cmp   = (v.op=="=="|| v.op=="!="|| v.op=="<" || v.op==">" ||
                                    v.op=="<="|| v.op==">=");
 
+            // Array op array: element-wise. Same shape and kind required.
+            if (lhs.is_array() && rhs.is_array()) {
+                if (lhs != rhs)
+                    error("type mismatch in '" + v.op + "': " +
+                          lhs.name() + " vs " + rhs.name(), e.line, e.col);
+                if (!is_arith)
+                    error("operator '" + v.op + "' is not defined on arrays", e.line, e.col);
+                if (lhs.kind == Type::Kind::Bool)
+                    error("arithmetic on bool arrays is not allowed", e.line, e.col);
+                if (v.op == "%" && lhs.kind == Type::Kind::Float)
+                    error("'%' is not supported on float arrays", e.line, e.col);
+                return lhs;
+            }
+
+            // Broadcasting: one side scalar, other side array of same element kind.
+            if (lhs.is_array() || rhs.is_array()) {
+                Type arr_t = lhs.is_array() ? lhs : rhs;
+                Type sc_t  = lhs.is_array() ? rhs : lhs;
+                if (sc_t != arr_t.elem())
+                    error("type mismatch in '" + v.op + "': " +
+                          lhs.name() + " vs " + rhs.name(), e.line, e.col);
+                if (!is_arith)
+                    error("operator '" + v.op + "' is not defined on arrays", e.line, e.col);
+                if (arr_t.kind == Type::Kind::Bool)
+                    error("arithmetic on bool arrays is not allowed", e.line, e.col);
+                if (v.op == "%" && arr_t.kind == Type::Kind::Float)
+                    error("'%' is not supported on float arrays", e.line, e.col);
+                return arr_t;
+            }
+
+            // Scalar op scalar.
             if (lhs != rhs)
                 error("type mismatch in '" + v.op + "': " +
-                      type_name(lhs) + " vs " + type_name(rhs), e.line, e.col);
-
+                      lhs.name() + " vs " + rhs.name(), e.line, e.col);
             if (is_arith) {
-                if (lhs == Type::Bool)
+                if (lhs.kind == Type::Kind::Bool)
                     error("arithmetic on bool is not allowed", e.line, e.col);
-                if (v.op == "%" && lhs == Type::Float)
+                if (v.op == "%" && lhs.kind == Type::Kind::Float)
                     error("'%' is not supported on float", e.line, e.col);
                 return lhs;
             }
             if (is_cmp) {
-                if (lhs == Type::Bool && v.op != "==" && v.op != "!=")
+                if (lhs.kind == Type::Kind::Bool && v.op != "==" && v.op != "!=")
                     error("'" + v.op + "' is not supported on bool", e.line, e.col);
-                return Type::Bool;
+                return Type::scalar(Type::Kind::Bool);
             }
             error("unknown binary operator '" + v.op + "'", e.line, e.col);
         }
 
         if constexpr (std::is_same_v<T, CallExpr>) {
+            // Try built-ins first
+            Type builtin_t = check_builtin_call(v, e.line, e.col);
+            if (builtin_t.kind != Type::Kind::Void || builtin_t.is_array())
+                return builtin_t;
+
             auto it = functions_.find(v.callee);
             if (it == functions_.end())
                 error("undefined function '" + v.callee + "'", e.line, e.col);
@@ -209,8 +334,8 @@ Type TypeChecker::check_expr(const Expr& e) const {
                 Type arg_t = check_expr(*v.args[i]);
                 if (arg_t != sig.param_types[i])
                     error("arg " + std::to_string(i + 1) + " of '" + v.callee +
-                          "': expected " + type_name(sig.param_types[i]) +
-                          ", got " + type_name(arg_t), e.line, e.col);
+                          "': expected " + sig.param_types[i].name() +
+                          ", got " + arg_t.name(), e.line, e.col);
             }
             return sig.return_type;
         }

@@ -1,10 +1,12 @@
 #pragma once
 #include "frontend/ast.hpp"
+#include "frontend/types.hpp"
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-enum class Type { Int, Float, Bool, Void };
+// Re-export FluxType under the historical name used by the rest of the file.
+using Type = FluxType;
 
 struct FnSignature {
     std::vector<Type> param_types;
@@ -18,7 +20,7 @@ public:
 private:
     std::vector<std::unordered_map<std::string, Type>> scopes_;
     std::unordered_map<std::string, FnSignature>        functions_;
-    Type current_return_type_ = Type::Void;
+    Type current_return_type_ = Type::scalar(Type::Kind::Void);
 
     void push_scope();
     void pop_scope();
@@ -31,7 +33,8 @@ private:
     void check_stmt(const Stmt& stmt);
     Type check_expr(const Expr& expr) const;
 
-    static Type        type_from_name(const std::string& name);
-    static std::string type_name(Type t);
+    // Built-in reductions/array ops. Returns Void to mean "not a built-in".
+    Type check_builtin_call(const CallExpr& call, int line, int col) const;
+
     [[noreturn]] static void error(const std::string& msg, int line, int col);
 };

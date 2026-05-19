@@ -85,10 +85,21 @@ FnDecl Parser::parse_fn_decl() {
 
 std::string Parser::parse_type() {
     const Token& t = peek();
-    if (t.type == TokenType::KW_INT)   { advance(); return "int";   }
-    if (t.type == TokenType::KW_FLOAT) { advance(); return "float"; }
-    if (t.type == TokenType::KW_BOOL)  { advance(); return "bool";  }
-    error("expected type ('int', 'float', 'bool')", t.line, t.col);
+    std::string base;
+    if      (t.type == TokenType::KW_INT)   { advance(); base = "int";   }
+    else if (t.type == TokenType::KW_FLOAT) { advance(); base = "float"; }
+    else if (t.type == TokenType::KW_BOOL)  { advance(); base = "bool";  }
+    else error("expected type ('int', 'float', 'bool')", t.line, t.col);
+
+    // Optional fixed-size array suffix: `[N]`
+    if (match(TokenType::LBRACKET)) {
+        const Token& size = expect(TokenType::INT_LIT, "expected array size after '['");
+        int n = std::stoi(size.lexeme);
+        if (n <= 0) error("array size must be > 0", size.line, size.col);
+        expect(TokenType::RBRACKET, "expected ']' after array size");
+        base += "[" + std::to_string(n) + "]";
+    }
+    return base;
 }
 
 // ── Block & statements ────────────────────────────────────────────────────────
@@ -184,25 +195,40 @@ std::unique_ptr<Stmt> Parser::parse_print_stmt() {
 std::unique_ptr<Stmt> Parser::parse_assign_or_expr_stmt() {
     int line = peek().line, col = peek().col;
 
-    // Lookahead: IDENTIFIER followed by '=' (but not '==') is an assignment.
-    if (check(TokenType::IDENTIFIER) &&
-        pos_ + 1 < tokens_.size() &&
-        tokens_[pos_ + 1].type == TokenType::EQ)
-    {
-        AssignStmt s;
-        s.name  = advance().lexeme; // consume identifier
-        advance();                  // consume '='
-        s.value = parse_expr();
+    // Parse an expression first, then decide whether the next token turns it
+    // into an assignment statement.
+    auto lhs = parse_expr();
+
+    if (match(TokenType::EQ)) {
+        auto rhs = parse_expr();
         expect(TokenType::SEMICOLON, "expected ';' after assignment");
+
         auto stmt = std::make_unique<Stmt>();
-        stmt->data = std::move(s);
         stmt->line = line; stmt->col = col;
-        return stmt;
+
+        // `ident = expr;`
+        if (auto* id = std::get_if<IdentExpr>(&lhs->data)) {
+            AssignStmt s;
+            s.name  = id->name;
+            s.value = std::move(rhs);
+            stmt->data = std::move(s);
+            return stmt;
+        }
+        // `array[index] = expr;`
+        if (auto* ix = std::get_if<IndexExpr>(&lhs->data)) {
+            IndexAssignStmt s;
+            s.array = std::move(ix->array);
+            s.index = std::move(ix->index);
+            s.value = std::move(rhs);
+            stmt->data = std::move(s);
+            return stmt;
+        }
+        error("invalid assignment target", line, col);
     }
 
-    ExprStmt s;
-    s.expr = parse_expr();
     expect(TokenType::SEMICOLON, "expected ';' after expression");
+    ExprStmt s;
+    s.expr = std::move(lhs);
     auto stmt = std::make_unique<Stmt>();
     stmt->data = std::move(s);
     stmt->line = line; stmt->col = col;
@@ -232,6 +258,18 @@ static int infix_bp(TokenType t) {
 std::unique_ptr<Expr> Parser::parse_expr(int min_bp) {
     auto left = parse_prefix();
 
+    // Postfix indexing: `a[i]`, `a[i][j]`, etc. Higher precedence than any infix.
+    while (check(TokenType::LBRACKET)) {
+        int line = peek().line, col = peek().col;
+        advance();                       // consume '['
+        auto index = parse_expr(0);
+        expect(TokenType::RBRACKET, "expected ']' after index");
+        auto e = std::make_unique<Expr>();
+        e->data = IndexExpr{ std::move(left), std::move(index) };
+        e->line = line; e->col = col;
+        left = std::move(e);
+    }
+
     while (true) {
         int lbp = infix_bp(peek().type);
         if (lbp < 0 || lbp <= min_bp) break;
@@ -248,6 +286,18 @@ std::unique_ptr<Expr> Parser::parse_expr(int min_bp) {
         e->data = BinaryExpr{op_str, std::move(left), std::move(right)};
         e->line = line; e->col = col;
         left = std::move(e);
+
+        // Allow indexing immediately after an infix op result too (rare but consistent).
+        while (check(TokenType::LBRACKET)) {
+            int il = peek().line, ic = peek().col;
+            advance();
+            auto idx = parse_expr(0);
+            expect(TokenType::RBRACKET, "expected ']' after index");
+            auto ie = std::make_unique<Expr>();
+            ie->data = IndexExpr{ std::move(left), std::move(idx) };
+            ie->line = il; ie->col = ic;
+            left = std::move(ie);
+        }
     }
 
     return left;
@@ -317,6 +367,24 @@ std::unique_ptr<Expr> Parser::parse_prefix() {
         auto inner = parse_expr(0);
         expect(TokenType::RPAREN, "expected ')' after expression");
         return inner;
+    }
+
+    // Array literal: `[e1, e2, ...]`
+    if (tok.type == TokenType::LBRACKET) {
+        advance();
+        ArrayLitExpr arr;
+        if (!check(TokenType::RBRACKET)) {
+            do {
+                arr.elements.push_back(parse_expr(0));
+            } while (match(TokenType::COMMA));
+        }
+        expect(TokenType::RBRACKET, "expected ']' after array literal");
+        if (arr.elements.empty())
+            error("empty array literal '[]' is not allowed (cannot infer type)", line, col);
+        auto e = std::make_unique<Expr>();
+        e->data = std::move(arr);
+        e->line = line; e->col = col;
+        return e;
     }
 
     error("expected an expression", tok.line, tok.col);

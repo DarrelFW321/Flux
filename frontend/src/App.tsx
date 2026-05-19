@@ -25,17 +25,15 @@ type AstView = 'graph' | 'json';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_SOURCE = `fn dot(n: int) -> float {
-  let sum: float = 0.0;
-  let i: int = 0;
-  while i < n {
-    sum = sum + 1.0;
-    i = i + 1;
-  }
-  return sum;
+const DEFAULT_SOURCE = `fn scale(a: float[4], k: float) -> float[4] {
+  return a * k;
 }
 
-print(dot(100));`;
+let x: float[4] = [1.0, 2.0, 3.0, 4.0];
+let y: float[4] = scale(x, 2.0);
+
+print(dot(x, y));
+print(y[2]);`;
 
 const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL ?? '';
 

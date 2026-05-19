@@ -32,9 +32,19 @@ struct CallExpr {
     std::vector<std::unique_ptr<Expr>> args;
 };
 
+struct ArrayLitExpr {
+    std::vector<std::unique_ptr<Expr>> elements;
+};
+
+struct IndexExpr {
+    std::unique_ptr<Expr> array;
+    std::unique_ptr<Expr> index;
+};
+
 using ExprVariant = std::variant<
     IntLitExpr, FloatLitExpr, BoolLitExpr,
-    IdentExpr, BinaryExpr, UnaryExpr, CallExpr
+    IdentExpr, BinaryExpr, UnaryExpr, CallExpr,
+    ArrayLitExpr, IndexExpr
 >;
 
 struct Expr {
@@ -82,9 +92,17 @@ struct ExprStmt {
     std::unique_ptr<Expr> expr;
 };
 
+// `a[i] = value;`
+struct IndexAssignStmt {
+    std::unique_ptr<Expr> array;
+    std::unique_ptr<Expr> index;
+    std::unique_ptr<Expr> value;
+};
+
 using StmtVariant = std::variant<
     LetStmt, AssignStmt, ReturnStmt, PrintStmt,
-    IfStmt, WhileStmt, ExprStmt
+    IfStmt, WhileStmt, ExprStmt,
+    IndexAssignStmt
 >;
 
 struct Stmt {

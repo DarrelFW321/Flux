@@ -42,6 +42,13 @@ static void print_expr(const Expr& e, int depth) {
         } else if constexpr (std::is_same_v<T, CallExpr>) {
             std::cout << ind << "Call(" << v.callee << ")\n";
             for (const auto& a : v.args) print_expr(*a, depth + 1);
+        } else if constexpr (std::is_same_v<T, ArrayLitExpr>) {
+            std::cout << ind << "ArrayLit(" << v.elements.size() << ")\n";
+            for (const auto& el : v.elements) print_expr(*el, depth + 1);
+        } else if constexpr (std::is_same_v<T, IndexExpr>) {
+            std::cout << ind << "Index\n";
+            print_expr(*v.array, depth + 1);
+            print_expr(*v.index, depth + 1);
         }
     }, e.data);
 }
@@ -85,6 +92,11 @@ static void print_stmt(const Stmt& s, int depth) {
         } else if constexpr (std::is_same_v<T, ExprStmt>) {
             std::cout << ind << "ExprStmt\n";
             print_expr(*v.expr, depth + 1);
+        } else if constexpr (std::is_same_v<T, IndexAssignStmt>) {
+            std::cout << ind << "IndexAssign\n";
+            print_expr(*v.array, depth + 1);
+            print_expr(*v.index, depth + 1);
+            print_expr(*v.value, depth + 1);
         }
     }, s.data);
 }

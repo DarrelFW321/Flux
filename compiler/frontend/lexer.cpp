@@ -94,6 +94,8 @@ std::vector<Token> Lexer::tokenize() {
             case ')': tokens.push_back({TokenType::RPAREN,    ")",  tok_line, tok_col}); break;
             case '{': tokens.push_back({TokenType::LBRACE,    "{",  tok_line, tok_col}); break;
             case '}': tokens.push_back({TokenType::RBRACE,    "}",  tok_line, tok_col}); break;
+            case '[': tokens.push_back({TokenType::LBRACKET,  "[",  tok_line, tok_col}); break;
+            case ']': tokens.push_back({TokenType::RBRACKET,  "]",  tok_line, tok_col}); break;
             case ',': tokens.push_back({TokenType::COMMA,     ",",  tok_line, tok_col}); break;
             case ':': tokens.push_back({TokenType::COLON,     ":",  tok_line, tok_col}); break;
             case ';': tokens.push_back({TokenType::SEMICOLON, ";",  tok_line, tok_col}); break;
@@ -162,6 +164,8 @@ const char* token_type_name(TokenType t) {
         case TokenType::RPAREN:     return "RPAREN";
         case TokenType::LBRACE:     return "LBRACE";
         case TokenType::RBRACE:     return "RBRACE";
+        case TokenType::LBRACKET:   return "LBRACKET";
+        case TokenType::RBRACKET:   return "RBRACKET";
         case TokenType::COMMA:      return "COMMA";
         case TokenType::COLON:      return "COLON";
         case TokenType::SEMICOLON:  return "SEMICOLON";

@@ -80,6 +80,21 @@ static std::string expr_json(const Expr& e) {
                    ",\"args\":" + args + "]}";
         }
 
+        if constexpr (std::is_same_v<T, ArrayLitExpr>) {
+            std::string elts = "[";
+            for (size_t i = 0; i < v.elements.size(); ++i) {
+                if (i) elts += ",";
+                elts += expr_json(*v.elements[i]);
+            }
+            elts += "]";
+            return "{\"kind\":\"ArrayLit\",\"elements\":" + elts + "}";
+        }
+
+        if constexpr (std::is_same_v<T, IndexExpr>) {
+            return "{\"kind\":\"Index\",\"array\":" + expr_json(*v.array) +
+                   ",\"index\":" + expr_json(*v.index) + "}";
+        }
+
         return "null";
     }, e.data);
 }
@@ -126,6 +141,11 @@ static std::string stmt_json(const Stmt& s) {
 
         if constexpr (std::is_same_v<T, ExprStmt>)
             return "{\"kind\":\"ExprStmt\",\"expr\":" + expr_json(*v.expr) + "}";
+
+        if constexpr (std::is_same_v<T, IndexAssignStmt>)
+            return "{\"kind\":\"IndexAssign\",\"array\":" + expr_json(*v.array) +
+                   ",\"index\":" + expr_json(*v.index) +
+                   ",\"value\":" + expr_json(*v.value) + "}";
 
         return "null";
     }, s.data);

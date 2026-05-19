@@ -55,6 +55,19 @@ function exprNode(e: any): GraphNode {
           edgeLabel: `arg ${i}`,
           node: exprNode(a),
         })));
+    case 'ArrayLit': {
+      const elts = e.elements ?? [];
+      return mk('ArrayLit', 'expr', `[${elts.length}]`,
+        elts.map((el: any, i: number) => ({
+          edgeLabel: `${i}`,
+          node: exprNode(el),
+        })));
+    }
+    case 'Index':
+      return mk('Index', 'expr', undefined, [
+        { edgeLabel: 'array', node: exprNode(e.array) },
+        { edgeLabel: 'index', node: exprNode(e.index) },
+      ]);
   }
   return mk(e.kind ?? '?', 'expr');
 }
@@ -94,6 +107,12 @@ function stmtNode(s: any): GraphNode {
     case 'ExprStmt':
       return mk('ExprStmt', 'stmt', undefined, [
         { node: exprNode(s.expr) },
+      ]);
+    case 'IndexAssign':
+      return mk('IndexAssign', 'stmt', undefined, [
+        { edgeLabel: 'array', node: exprNode(s.array) },
+        { edgeLabel: 'index', node: exprNode(s.index) },
+        { edgeLabel: 'value', node: exprNode(s.value) },
       ]);
   }
   return mk(s.kind ?? '?', 'stmt');

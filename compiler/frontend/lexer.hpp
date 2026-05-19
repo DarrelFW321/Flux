@@ -18,7 +18,7 @@ enum class TokenType {
     EQ_EQ, BANG_EQ, LT, GT, LT_EQ, GT_EQ,
     EQ,
     // Punctuation
-    LPAREN, RPAREN, LBRACE, RBRACE,
+    LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
     COMMA, COLON, SEMICOLON, ARROW,
     // End of input
     EOF_TOK,
