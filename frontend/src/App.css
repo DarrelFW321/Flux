@@ -216,3 +216,12 @@ body {
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Output box ──────────────────────────────────────────────────────────── */
+.output-box {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 14px;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}

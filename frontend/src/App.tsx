@@ -19,7 +19,7 @@ interface FrontendResult {
   error: string | null;
 }
 
-type Tab = 'tokens' | 'ast' | 'ir';
+type Tab = 'tokens' | 'ast' | 'ir' | 'output';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -64,9 +64,12 @@ export default function App() {
   const [source, setSource]       = useState(DEFAULT_SOURCE);
   const [result, setResult]       = useState<FrontendResult>({ tokens: null, ast: null, error: null });
   const [activeTab, setActiveTab] = useState<Tab>('tokens');
-  const [ir, setIr]               = useState('');
-  const [irLoading, setIrLoading] = useState(false);
-  const [irError, setIrError]     = useState('');
+  const [ir, setIr]                   = useState('');
+  const [irLoading, setIrLoading]     = useState(false);
+  const [irError, setIrError]         = useState('');
+  const [output, setOutput]           = useState('');
+  const [runLoading, setRunLoading]   = useState(false);
+  const [runError, setRunError]       = useState('');
   const [wasmReady, setWasmReady] = useState(false);
 
   const fluxRef    = useRef<FluxWasm | null>(null);
@@ -97,6 +100,28 @@ export default function App() {
     debounce.current = setTimeout(() => runFrontend(source), 300);
     return () => clearTimeout(debounce.current);
   }, [source, wasmReady, runFrontend]);
+
+  // Run program on Render backend.
+  const runProgram = async () => {
+    if (!BACKEND_URL) { setRunError('VITE_BACKEND_URL is not set.'); return; }
+    setRunLoading(true);
+    setRunError('');
+    setOutput('');
+    try {
+      const res  = await fetch(`${BACKEND_URL}/run`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ source }),
+      });
+      const data = await res.json();
+      if (data.error) setRunError(data.error);
+      else            setOutput(data.output ?? '');
+    } catch {
+      setRunError('Could not reach the backend.');
+    } finally {
+      setRunLoading(false);
+    }
+  };
 
   // Fetch IR from Render backend.
   const fetchIR = async () => {
@@ -150,7 +175,7 @@ export default function App() {
         {/* ── Output ── */}
         <div className="output-pane">
           <div className="tab-bar">
-            {(['tokens', 'ast', 'ir'] as Tab[]).map(t => (
+            {(['tokens', 'ast', 'ir', 'output'] as Tab[]).map(t => (
               <button
                 key={t}
                 className={`tab-btn ${activeTab === t ? 'active' : ''}`}
@@ -210,6 +235,37 @@ export default function App() {
                     </div>
                   )
                   : <Placeholder>Type something to see the AST.</Placeholder>
+            )}
+
+            {/* ── Output ── */}
+            {activeTab === 'output' && (
+              <div className="ir-pane">
+                <button
+                  className="fetch-btn"
+                  onClick={runProgram}
+                  disabled={runLoading}
+                >
+                  {runLoading ? 'Running…' : '▶ Run'}
+                </button>
+
+                {runLoading && (
+                  <div className="cold-start">
+                    <span className="spinner" /> Compiling and running on server…
+                  </div>
+                )}
+
+                {runError && <div className="error-banner">{runError}</div>}
+
+                {output && (
+                  <div className="scroll-area">
+                    <pre className="output-box">{output}</pre>
+                  </div>
+                )}
+
+                {!output && !runLoading && !runError && (
+                  <Placeholder>Click "Run" to compile and execute on the backend.</Placeholder>
+                )}
+              </div>
             )}
 
             {/* ── IR ── */}

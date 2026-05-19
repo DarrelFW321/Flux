@@ -29,6 +29,48 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/run")
+def run_source(req: CompileRequest):
+    """
+    Compile source to a native Linux binary and execute it.
+    Returns { output, error }.
+    """
+    with tempfile.NamedTemporaryFile(
+        suffix=".fl", delete=False, mode="w", encoding="utf-8"
+    ) as f:
+        f.write(req.source)
+        tmp_path = f.name
+
+    out_path = tmp_path + ".out"
+
+    try:
+        # Compile to native binary
+        compile_result = subprocess.run(
+            [FLUX_BIN, "--compile", tmp_path, "-o", out_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if compile_result.returncode != 0:
+            return {"output": None, "error": compile_result.stderr.strip() or compile_result.stdout.strip()}
+
+        # Execute with a strict timeout
+        run_result = subprocess.run(
+            [out_path],
+            capture_output=True, text=True, timeout=5,
+        )
+        return {
+            "output": run_result.stdout,
+            "error":  run_result.stderr.strip() or None,
+        }
+    except subprocess.TimeoutExpired:
+        return {"output": None, "error": "Program timed out (5 s limit)"}
+    except Exception as e:
+        return {"output": None, "error": str(e)}
+    finally:
+        os.unlink(tmp_path)
+        if os.path.exists(out_path):
+            os.unlink(out_path)
+
+
 @app.post("/compile")
 def compile_source(req: CompileRequest):
     """
