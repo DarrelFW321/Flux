@@ -30,6 +30,7 @@ const char* op_mnemonic(Op op) {
         case Op::ARRAY_COPY:  return "array.copy";
         case Op::REDUCE_SUM:  return "reduce.sum";
         case Op::REDUCE_DOT:  return "reduce.dot";
+        case Op::FUSED_LOOP:  return "fused.loop";
         case Op::CALL:        return "call";
         case Op::PRINT:       return "print";
     }
@@ -56,6 +57,15 @@ static void print_inst(std::ostream& os, const Inst& i) {
         case Op::CONST_BOOL:  os << " " << (i.bval ? "true" : "false"); break;
         case Op::ALLOCA:      os << " " << i.result_type.name(); break;
         case Op::ARRAY_OP:    os << " '" << i.sval << "'"; break;
+        case Op::FUSED_LOOP: {
+            os << " [";
+            for (size_t k = 0; k < i.fused_ops.size(); ++k) {
+                if (k) os << " ";
+                os << i.fused_ops[k];
+            }
+            os << "]";
+            break;
+        }
         case Op::CALL:        os << " @" << i.sval; break;
         default: break;
     }

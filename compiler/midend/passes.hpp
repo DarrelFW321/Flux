@@ -55,6 +55,7 @@ PassPipeline default_pipeline();
 // Individual passes.
 int const_fold       (Function& fn);
 int algebraic_simplify(Function& fn);
+int loop_fusion      (Function& fn);
 int dce              (Function& fn);
 
 }  // namespace mir

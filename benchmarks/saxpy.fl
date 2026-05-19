@@ -1,0 +1,34 @@
+// SAXPY-style microbenchmark — Flux side.
+//
+// Inner kernel:  sum(2.0 * x + y)   over 64-element vectors.
+// Outer loop:    200_000 iterations.
+//
+// Each iteration perturbs x[0] from the running total so LLVM can't hoist
+// the array expression out of the loop. The kernel exercises three
+// phase-2 features in one line: scalar-array broadcast (`2.0 * x`),
+// array-array addition, and the `sum` reducer.
+
+fn bench() -> float {
+  let x: float[64] = [
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
+  ];
+  let y: float[64] = [
+    2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0,
+    2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0,
+    2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0,
+    2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0
+  ];
+  let total: float = 0.0;
+  let i: int = 0;
+  while i < 200000 {
+    x[0]  = total / 1000000000.0;
+    total = total + sum(2.0 * x + y);
+    i = i + 1;
+  }
+  return total;
+}
+
+print(bench());

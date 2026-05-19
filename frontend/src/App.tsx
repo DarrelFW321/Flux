@@ -44,10 +44,15 @@ interface BenchmarkRow {
   error: string | null;
 }
 
-interface BenchmarkReport {
+interface KernelReport {
   kernel: string;
   description: string;
   results: BenchmarkRow[];
+  error: string | null;
+}
+
+interface BenchmarkReport {
+  kernels: KernelReport[];
   error: string | null;
 }
 
@@ -685,94 +690,47 @@ interface BenchmarkPaneProps {
 }
 
 function BenchmarkPane({ report, loading, error, onRun }: BenchmarkPaneProps) {
-  // Find the fastest valid time so we can render relative-speed bars.
-  const fastestMs = useMemo(() => {
-    if (!report) return null;
-    const valid = report.results
-      .map(r => r.time_ms)
-      .filter((t): t is number => typeof t === 'number');
-    return valid.length ? Math.min(...valid) : null;
-  }, [report]);
-
   return (
     <div className="action-pane">
       <div className="action-bar">
         <button className="action-btn" onClick={onRun} disabled={loading}>
-          {loading ? 'Running…' : 'Run benchmark'}
+          {loading ? 'Running…' : 'Run benchmarks'}
         </button>
         {report && (
           <span className="bench-meta dim">
-            {report.kernel} · {report.description}
+            Flux vs hand-written C (gcc -O2) vs NumPy · {report.kernels.length} kernel
+            {report.kernels.length === 1 ? '' : 's'}
           </span>
         )}
       </div>
 
       {loading && (
         <div className="notice">
-          <span className="spinner" /> Compiling and running three implementations.
-          Cold starts can add ~30s; subsequent runs are instant.
+          <span className="spinner" /> Compiling and running every kernel in
+          three implementations. Cold starts can add ~30s; subsequent runs are
+          instant.
         </div>
       )}
 
       {error && <div className="error-banner">{error}</div>}
 
-      {report && !loading && fastestMs != null && (
+      {report && !loading && (
         <div className="scroll-area">
-          <table className="bench-table">
-            <thead>
-              <tr>
-                <th>Implementation</th>
-                <th className="num">Time</th>
-                <th className="num">Relative</th>
-                <th>Speed</th>
-                <th>Output</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.results.map(row => {
-                const ok       = typeof row.time_ms === 'number';
-                const relative = ok ? row.time_ms! / fastestMs : null;
-                const width    = ok ? Math.max(2, (fastestMs / row.time_ms!) * 100) : 0;
-                return (
-                  <tr key={row.name}>
-                    <td className="bench-name">{row.name}</td>
-                    <td className="num">{ok ? `${row.time_ms!.toFixed(1)} ms` : '—'}</td>
-                    <td className="num">
-                      {relative != null
-                        ? (relative === 1 ? '1.00×' : `${relative.toFixed(2)}×`)
-                        : '—'}
-                    </td>
-                    <td className="bench-bar-cell">
-                      {ok && (
-                        <div className="bench-bar-track">
-                          <div
-                            className={`bench-bar ${relative === 1 ? 'best' : ''}`}
-                            style={{ width: `${width}%` }}
-                          />
-                        </div>
-                      )}
-                    </td>
-                    <td className="bench-output" title={row.output ?? row.error ?? ''}>
-                      {row.error
-                        ? <span className="bench-err">error: {row.error}</span>
-                        : <code>{row.output}</code>}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          {report.kernels.map(k => <KernelTable key={k.kernel} report={k} />)}
           <p className="bench-footnote">
-            Lower is better. The bar shows speed relative to the fastest
-            implementation (longer bar = faster). All three compute the
-            same number — that they match is the correctness check.
+            Lower is better. Bar shows speed relative to the fastest
+            implementation for each kernel — longer bar = faster. The
+            <code>output</code> column is the kernel's printed result;
+            matching values across rows means the three implementations
+            agree numerically.
           </p>
         </div>
       )}
 
       {!report && !loading && !error && (
         <Placeholder>
-          Compare Flux against hand-written C and NumPy on the same kernel.
+          Compare Flux against hand-written C and NumPy across four kernels:
+          dot product, saxpy, ReLU activation, and a bigger dot product.
           <br />
           <span className="dim">
             Each implementation runs in its own process; timing is end-to-end
@@ -780,6 +738,74 @@ function BenchmarkPane({ report, loading, error, onRun }: BenchmarkPaneProps) {
           </span>
         </Placeholder>
       )}
+    </div>
+  );
+}
+
+interface KernelTableProps {
+  report: KernelReport;
+}
+
+function KernelTable({ report }: KernelTableProps) {
+  const fastestMs = useMemo(() => {
+    const valid = report.results
+      .map(r => r.time_ms)
+      .filter((t): t is number => typeof t === 'number');
+    return valid.length ? Math.min(...valid) : null;
+  }, [report]);
+
+  return (
+    <div className="kernel-block">
+      <header className="kernel-header">
+        <span className="kernel-title">{report.kernel}</span>
+        <span className="kernel-desc">{report.description}</span>
+      </header>
+      <table className="bench-table">
+        <thead>
+          <tr>
+            <th>Implementation</th>
+            <th className="num">Time</th>
+            <th className="num">Relative</th>
+            <th>Speed</th>
+            <th>Output</th>
+          </tr>
+        </thead>
+        <tbody>
+          {report.results.map(row => {
+            const ok       = typeof row.time_ms === 'number';
+            const relative = ok && fastestMs != null ? row.time_ms! / fastestMs : null;
+            const width    = ok && fastestMs != null
+              ? Math.max(2, (fastestMs / row.time_ms!) * 100)
+              : 0;
+            return (
+              <tr key={row.name}>
+                <td className="bench-name">{row.name}</td>
+                <td className="num">{ok ? `${row.time_ms!.toFixed(1)} ms` : '—'}</td>
+                <td className="num">
+                  {relative != null
+                    ? (relative === 1 ? '1.00×' : `${relative.toFixed(2)}×`)
+                    : '—'}
+                </td>
+                <td className="bench-bar-cell">
+                  {ok && (
+                    <div className="bench-bar-track">
+                      <div
+                        className={`bench-bar ${relative === 1 ? 'best' : ''}`}
+                        style={{ width: `${width}%` }}
+                      />
+                    </div>
+                  )}
+                </td>
+                <td className="bench-output" title={row.output ?? row.error ?? ''}>
+                  {row.error
+                    ? <span className="bench-err">error: {row.error}</span>
+                    : <code>{row.output}</code>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

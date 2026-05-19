@@ -42,6 +42,10 @@ enum class Op {
     ARRAY_COPY,    // operand: src array; result: fresh copy
     REDUCE_SUM,    // operand: array; result: scalar
     REDUCE_DOT,    // operands: a, b; result: scalar
+    // Fused whole-array expression (map and/or reduce in one loop).
+    // operands: leaf values in post-order; fused_ops: RPN of binary ops
+    // ("+","-","*","/","%") with optional trailing "sum" reducer.
+    FUSED_LOOP,
     // Calls and I/O
     CALL,          // sval: callee; operands: args; result: scalar or array
     PRINT,         // operand: value
@@ -66,6 +70,8 @@ struct Inst {
     double       fval = 0.0;
     bool         bval = false;
     std::string  sval;
+    // RPN op sequence for FUSED_LOOP (e.g. {"*", "+", "sum"} for sum(2*x+y)).
+    std::vector<std::string> fused_ops;
 };
 
 struct Terminator {

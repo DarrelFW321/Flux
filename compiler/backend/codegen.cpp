@@ -254,6 +254,7 @@ void CodeGen::gen_inst(const mir::Inst& i) {
 
         case Op::ARRAY_LIT:   bind_value(i.result, emit_array_literal(i), i.result_type); return;
         case Op::ARRAY_OP:    bind_value(i.result, emit_array_op     (i), i.result_type); return;
+        case Op::FUSED_LOOP:  bind_value(i.result, emit_fused_loop   (i), i.result_type); return;
         case Op::ARRAY_COPY:  bind_value(i.result, emit_array_copy   (i), i.result_type); return;
         case Op::INDEX_LOAD:  bind_value(i.result, emit_index_load   (i), i.result_type); return;
         case Op::INDEX_STORE: emit_index_store(i); return;
@@ -369,6 +370,119 @@ llvm::Value* CodeGen::emit_array_op(const mir::Inst& i) {
 
     builder_->SetInsertPoint(exit_bb);
     return result;
+}
+
+// ── Fused map / map+reduce (one LLVM loop) ───────────────────────────────────
+
+static mir::Op fused_op_from_string(const std::string& s) {
+    if (s == "+") return mir::Op::ADD;
+    if (s == "-") return mir::Op::SUB;
+    if (s == "*") return mir::Op::MUL;
+    if (s == "/") return mir::Op::DIV;
+    if (s == "%") return mir::Op::MOD;
+    throw std::runtime_error("fused_loop: unknown op '" + s + "'");
+}
+
+llvm::Value* CodeGen::emit_fused_loop(const mir::Inst& i) {
+    const bool has_sum = !i.fused_ops.empty() && i.fused_ops.back() == "sum";
+
+    FluxType arr_t = i.result_type;
+    if (!has_sum) {
+        arr_t = i.result_type;
+    } else {
+        arr_t = FluxType::array(i.result_type.kind, 0);
+        for (mir::ValueId v : i.operands) {
+            FluxType t = value_type(v);
+            if (t.is_array()) { arr_t = t; break; }
+        }
+    }
+
+    auto* elem_ty = llvm_scalar_type(arr_t.kind);
+    auto* arr_ty  = llvm::ArrayType::get(elem_ty, (uint64_t)arr_t.array_size);
+    auto* i32     = llvm::Type::getInt32Ty(ctx_);
+    auto* zero    = llvm::ConstantInt::get(i32, 0);
+    auto* one     = llvm::ConstantInt::get(i32, 1);
+    auto* size    = llvm::ConstantInt::get(i32, (uint64_t)arr_t.array_size);
+    const bool fp = (arr_t.kind == FluxType::Kind::Float);
+
+    llvm::Value* result_arr = nullptr;
+    if (!has_sum)
+        result_arr = create_entry_alloca("fused.arr", arr_ty);
+
+    llvm::Value* acc_slot = nullptr;
+    if (has_sum) {
+        acc_slot = create_entry_alloca("fused.acc", elem_ty);
+        builder_->CreateStore(
+            fp ? (llvm::Value*)llvm::ConstantFP::get(elem_ty, 0.0)
+               : (llvm::Value*)llvm::ConstantInt::get(elem_ty, 0),
+            acc_slot);
+    }
+
+    auto* idx_slot = create_entry_alloca("fused.i", i32);
+    builder_->CreateStore(zero, idx_slot);
+
+    auto* cond_bb = llvm::BasicBlock::Create(ctx_, "fused.cond", current_fn_);
+    auto* body_bb = llvm::BasicBlock::Create(ctx_, "fused.body", current_fn_);
+    auto* exit_bb = llvm::BasicBlock::Create(ctx_, "fused.exit", current_fn_);
+
+    builder_->CreateBr(cond_bb);
+    builder_->SetInsertPoint(cond_bb);
+    auto* i_val = builder_->CreateLoad(i32, idx_slot, "i");
+    builder_->CreateCondBr(builder_->CreateICmpSLT(i_val, size, "i.lt.N"), body_bb, exit_bb);
+
+    builder_->SetInsertPoint(body_bb);
+
+    std::vector<llvm::Value*> leaf_vals;
+    leaf_vals.reserve(i.operands.size());
+    for (mir::ValueId vid : i.operands) {
+        FluxType t = value_type(vid);
+        if (t.is_array()) {
+            auto* ptr = get_value(vid);
+            auto* gep = builder_->CreateInBoundsGEP(arr_ty, ptr, {zero, i_val}, "f.gep");
+            leaf_vals.push_back(builder_->CreateLoad(elem_ty, gep, "f.ld"));
+        } else {
+            leaf_vals.push_back(get_value(vid));
+        }
+    }
+
+    std::vector<llvm::Value*> stack;
+    stack.reserve(leaf_vals.size() + i.fused_ops.size());
+    for (llvm::Value* v : leaf_vals) stack.push_back(v);
+
+    for (const std::string& op : i.fused_ops) {
+        if (op == "sum") {
+            if (stack.size() != 1)
+                throw std::runtime_error("fused_loop: bad RPN stack at sum");
+            auto* val  = stack.back();
+            auto* prev = builder_->CreateLoad(elem_ty, acc_slot, "acc");
+            auto* next = fp ? builder_->CreateFAdd(prev, val, "acc.next")
+                            : builder_->CreateAdd (prev, val, "acc.next");
+            builder_->CreateStore(next, acc_slot);
+            stack.clear();
+            break;
+        }
+        if (stack.size() < 2)
+            throw std::runtime_error("fused_loop: bad RPN stack at '" + op + "'");
+        auto* rhs = stack.back(); stack.pop_back();
+        auto* lhs = stack.back(); stack.pop_back();
+        stack.push_back(emit_scalar_binop(fused_op_from_string(op), lhs, rhs, arr_t.kind));
+    }
+
+    if (!has_sum) {
+        if (stack.size() != 1)
+            throw std::runtime_error("fused_loop: bad RPN stack at store");
+        auto* dst = builder_->CreateInBoundsGEP(arr_ty, result_arr, {zero, i_val}, "f.dst");
+        builder_->CreateStore(stack.back(), dst);
+    }
+
+    auto* next = builder_->CreateAdd(i_val, one, "i.next");
+    builder_->CreateStore(next, idx_slot);
+    builder_->CreateBr(cond_bb);
+
+    builder_->SetInsertPoint(exit_bb);
+    if (has_sum)
+        return builder_->CreateLoad(elem_ty, acc_slot, "fused.sum");
+    return result_arr;
 }
 
 // ── Array copy: alloca + memcpy ─────────────────────────────────────────────

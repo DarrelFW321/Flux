@@ -283,6 +283,195 @@ int algebraic_simplify(Function& fn) {
     return changes;
 }
 
+// ── Loop fusion ─────────────────────────────────────────────────────────────
+//
+// Fuses chains of ARRAY_OP instructions (and optional REDUCE_SUM) into a
+// single FUSED_LOOP so the backend emits one LLVM loop instead of one loop
+// per element-wise op plus a separate reduction loop.
+//
+// Example: sum(2.0 * x + y)
+//   %t1 = array.op '*' %2.0, %x
+//   %t2 = array.op '+' %t1, %y
+//   %s  = reduce.sum %t2
+// becomes:
+//   %s = fused.loop [*, +, sum] %2.0, %x, %y
+
+static void count_uses(Function& fn, std::unordered_map<ValueId, int>& uses) {
+    uses.clear();
+    for (auto& b : fn.blocks) {
+        for (auto& i : b.insts)
+            for (ValueId op : i.operands) ++uses[op];
+        if (b.term.kind == Terminator::BR_COND) ++uses[b.term.cond];
+        if (b.term.kind == Terminator::RET)     ++uses[b.term.ret_val];
+    }
+}
+
+static Inst* find_def(Function& fn, ValueId id) {
+    for (auto& b : fn.blocks)
+        for (auto& i : b.insts)
+            if (i.result == id) return &i;
+    return nullptr;
+}
+
+static bool is_fusable_array_op(const Inst& i) {
+    if (i.op != Op::ARRAY_OP) return false;
+    return i.sval == "+" || i.sval == "-" || i.sval == "*" ||
+           i.sval == "/" || i.sval == "%";
+}
+
+static bool collect_array_op_chain(Function& fn,
+                                   const std::unordered_map<ValueId, int>& uses,
+                                   ValueId start,
+                                   std::vector<Inst*>& chain) {
+    chain.clear();
+    ValueId cur = start;
+    while (true) {
+        Inst* def = find_def(fn, cur);
+        if (!def || !is_fusable_array_op(*def)) return false;
+        if (!chain.empty()) {
+            auto uit = uses.find(cur);
+            if (uit == uses.end() || uit->second != 1) return false;
+        }
+        chain.push_back(def);
+        ValueId prev = NO_VALUE;
+        for (ValueId op : def->operands) {
+            Inst* op_def = find_def(fn, op);
+            if (op_def && op_def->op == Op::ARRAY_OP) prev = op;
+        }
+        if (prev == NO_VALUE) return true;
+        cur = prev;
+    }
+}
+
+static bool build_fused_rpn(const std::vector<Inst*>& chain,
+                            std::vector<ValueId>& leaves,
+                            std::vector<std::string>& rpn) {
+    if (chain.empty()) return false;
+    leaves.clear();
+    rpn.clear();
+
+    std::vector<Inst*> ordered = chain;
+    std::reverse(ordered.begin(), ordered.end());
+
+    ValueId cur_temp = NO_VALUE;
+    for (size_t idx = 0; idx < ordered.size(); ++idx) {
+        Inst* op = ordered[idx];
+        if (idx == 0) {
+            for (ValueId v : op->operands) leaves.push_back(v);
+        } else {
+            bool found_prev = false;
+            for (ValueId v : op->operands) {
+                if (v == cur_temp) found_prev = true;
+                else leaves.push_back(v);
+            }
+            if (!found_prev) return false;
+        }
+        rpn.push_back(op->sval);
+        cur_temp = op->result;
+    }
+    return true;
+}
+
+int loop_fusion(Function& fn) {
+    struct FusionSite {
+        Inst*              reduce = nullptr;
+        std::vector<Inst*> chain;
+        std::vector<ValueId> leaves;
+        std::vector<std::string> rpn;
+    };
+    std::vector<FusionSite> sites;
+
+    std::unordered_map<ValueId, int> uses;
+    count_uses(fn, uses);
+
+    for (auto& b : fn.blocks) {
+        for (auto& i : b.insts) {
+            if (i.op != Op::REDUCE_SUM) continue;
+            if (i.operands.size() != 1) continue;
+
+            std::vector<Inst*> chain;
+            if (!collect_array_op_chain(fn, uses, i.operands[0], chain))
+                continue;
+            if (chain.empty()) continue;
+
+            FusionSite site;
+            site.reduce = &i;
+            site.chain  = chain;
+            if (!build_fused_rpn(chain, site.leaves, site.rpn)) continue;
+            site.rpn.push_back("sum");
+            sites.push_back(std::move(site));
+        }
+    }
+
+  // Map-only: fuse ARRAY_OP chains whose result is used once by a non-ARRAY_OP.
+    for (auto& b : fn.blocks) {
+        for (auto& i : b.insts) {
+            if (!is_fusable_array_op(i)) continue;
+            if (uses[i.result] != 1) continue;
+            // Skip if already part of a reduce fusion site.
+            bool consumed = false;
+            for (const auto& s : sites) {
+                for (Inst* p : s.chain)
+                    if (p == &i) { consumed = true; break; }
+                if (s.reduce == &i) consumed = true;
+                if (consumed) break;
+            }
+            if (consumed) continue;
+
+            std::vector<Inst*> chain;
+            if (!collect_array_op_chain(fn, uses, i.result, chain)) continue;
+            if (chain.size() < 2) continue;
+
+            FusionSite site;
+            site.reduce = &i;
+            site.chain  = chain;
+            if (!build_fused_rpn(chain, site.leaves, site.rpn)) continue;
+            sites.push_back(std::move(site));
+        }
+    }
+
+    if (sites.empty()) return 0;
+
+    std::unordered_map<Inst*, bool> remove;
+    int changes = 0;
+
+    for (auto& site : sites) {
+        const bool is_reduce = site.reduce->op == Op::REDUCE_SUM;
+        Inst& target = is_reduce ? *site.reduce : *site.chain[0];
+
+        Inst fused;
+        fused.op          = Op::FUSED_LOOP;
+        fused.operands    = site.leaves;
+        fused.fused_ops   = site.rpn;
+        fused.result      = target.result;
+        fused.result_type = target.result_type;
+        fused.result_role = target.result_role;
+
+        if (is_reduce) {
+            fused.result_type = target.result_type;
+            fused.result_role = ValueRole::SCALAR;
+        }
+
+        target = std::move(fused);
+        ++changes;
+
+        for (Inst* p : site.chain) {
+            if (p != &target) remove[p] = true;
+        }
+    }
+
+    for (auto& b : fn.blocks) {
+        auto& insts = b.insts;
+        insts.erase(std::remove_if(insts.begin(), insts.end(), [&](const Inst& i) {
+            Inst* mut = const_cast<Inst*>(&i);
+            auto it = remove.find(mut);
+            return it != remove.end() && it->second;
+        }), insts.end());
+    }
+
+    return changes;
+}
+
 // ── Dead code elimination ───────────────────────────────────────────────────
 //
 // Iteratively removes value-producing instructions whose result has no uses,
@@ -366,6 +555,7 @@ PassPipeline default_pipeline() {
         {"const-fold",         const_fold},
         {"algebraic-simplify", algebraic_simplify},
         {"const-fold",         const_fold},   // catch consts exposed by algebraic-simplify
+        {"loop-fusion",        loop_fusion},
         {"dce",                dce},
     }};
 }

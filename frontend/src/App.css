@@ -835,3 +835,43 @@ button { font-family: inherit; }
   font-family: var(--font-ui);
   border-top: 1px solid var(--border-1);
 }
+.bench-footnote code {
+  padding: 0 4px;
+  background: var(--bg-2);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.kernel-block {
+  border-bottom: 1px solid var(--border-1);
+}
+.kernel-block:last-of-type { border-bottom: none; }
+
+.kernel-header {
+  padding: 14px 16px 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.kernel-title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+.kernel-desc {
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.45;
+}
+
+.kernel-block .bench-table thead {
+  display: none;
+}
+.kernel-block:first-of-type .bench-table thead {
+  display: table-header-group;
+}

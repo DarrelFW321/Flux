@@ -1,0 +1,48 @@
+// ReLU activation microbenchmark — Flux side.
+//
+// Inner kernel: apply relu element-wise to a 64-element vector and accumulate
+// the sum. Outer loop: 200_000 iterations. Each iteration perturbs x[0] to
+// prevent LLVM from hoisting the whole loop body.
+//
+// `relu_step` is defined as a plain Flux function — we lean on LLVM's inliner
+// to make this competitive with hand-written C. The benchmark proves the
+// language can express a real ML activation without any new builtins.
+
+fn relu_step(v: float) -> float {
+  if v > 0.0 {
+    return v;
+  }
+  return 0.0;
+}
+
+fn bench() -> float {
+  // Mix of positive and negative values so relu actually does work.
+  let x: float[64] = [
+     1.0, -1.0,  2.0, -2.0,  3.0, -3.0,  4.0, -4.0,
+     5.0, -5.0,  6.0, -6.0,  7.0, -7.0,  8.0, -8.0,
+     1.5, -1.5,  2.5, -2.5,  3.5, -3.5,  4.5, -4.5,
+     5.5, -5.5,  6.5, -6.5,  7.5, -7.5,  8.5, -8.5,
+     0.5, -0.5,  1.0, -1.0,  1.5, -1.5,  2.0, -2.0,
+     2.5, -2.5,  3.0, -3.0,  3.5, -3.5,  4.0, -4.0,
+     4.5, -4.5,  5.0, -5.0,  5.5, -5.5,  6.0, -6.0,
+     6.5, -6.5,  7.0, -7.0,  7.5, -7.5,  8.0, -8.0
+  ];
+  let total: float = 0.0;
+  let inner: float = 0.0;
+  let i: int = 0;
+  let j: int = 0;
+  while i < 200000 {
+    x[0]  = total / 1000000000.0;
+    inner = 0.0;
+    j = 0;
+    while j < 64 {
+      inner = inner + relu_step(x[j]);
+      j = j + 1;
+    }
+    total = total + inner;
+    i = i + 1;
+  }
+  return total;
+}
+
+print(bench());

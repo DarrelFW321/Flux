@@ -124,11 +124,12 @@ def compile_source(req: CompileRequest):
 
 # ── Benchmark endpoint ───────────────────────────────────────────────────────
 #
-# Compiles `benchmarks/dot.fl` and `benchmarks/dot.c` to native binaries (if
-# they're not already cached on disk), then times an end-to-end run of all
-# three implementations (Flux, C, NumPy) with `time.perf_counter`. Returns
-# per-implementation wall-clock millis plus the program output so the
-# frontend can show they computed identical results.
+# Each kernel in `KERNELS` has a Flux source, a hand-written C source, and a
+# Python+NumPy script that all compute the same number. We compile the Flux
+# and C versions to native binaries (cached on disk between calls), then time
+# an end-to-end subprocess run of all three implementations with
+# `time.perf_counter`. Returns per-kernel timings plus the printed result so
+# the UI can show the implementations agree numerically.
 
 def _exe_suffix() -> str:
     return ".exe" if sys.platform.startswith("win") else ""
@@ -149,22 +150,22 @@ def _gcc_executable() -> str | None:
 def _time_subprocess(cmd: list[str]) -> tuple[float, str]:
     """Run `cmd`, return (wall_ms, stdout). Raises on failure."""
     start = time.perf_counter()
-    proc  = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    proc  = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "non-zero exit")
     return elapsed_ms, proc.stdout.strip()
 
 
-def _ensure_flux_binary(out_dir: str) -> str:
-    """Compile benchmarks/dot.fl to `out_dir/dot_flux(.exe)` via the flux binary."""
-    src = os.path.join(BENCH_DIR, "dot.fl")
-    out = os.path.join(out_dir, "dot_flux" + _exe_suffix())
+def _ensure_flux_binary(stem: str, out_dir: str) -> str:
+    """Compile benchmarks/<stem>.fl to `out_dir/<stem>_flux(.exe)`."""
+    src = os.path.join(BENCH_DIR, f"{stem}.fl")
+    out = os.path.join(out_dir, f"{stem}_flux" + _exe_suffix())
     if os.path.exists(out):
         return out
     proc = subprocess.run(
         [FLUX_BIN, "--compile", src, "-o", out],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=120,
     )
     if proc.returncode != 0:
         raise RuntimeError(
@@ -173,18 +174,18 @@ def _ensure_flux_binary(out_dir: str) -> str:
     return out
 
 
-def _ensure_c_binary(out_dir: str) -> str:
-    """Compile benchmarks/dot.c to `out_dir/dot_c(.exe)` with -O2."""
+def _ensure_c_binary(stem: str, out_dir: str) -> str:
+    """Compile benchmarks/<stem>.c to `out_dir/<stem>_c(.exe)` with -O2."""
     gcc = _gcc_executable()
     if not gcc:
         raise RuntimeError("gcc not found on PATH; cannot compile C benchmark")
-    src = os.path.join(BENCH_DIR, "dot.c")
-    out = os.path.join(out_dir, "dot_c" + _exe_suffix())
+    src = os.path.join(BENCH_DIR, f"{stem}.c")
+    out = os.path.join(out_dir, f"{stem}_c" + _exe_suffix())
     if os.path.exists(out):
         return out
     proc = subprocess.run(
         [gcc, "-O2", "-o", out, src],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=120,
     )
     if proc.returncode != 0:
         raise RuntimeError(
@@ -198,41 +199,71 @@ _BENCH_CACHE_DIR = os.path.join(tempfile.gettempdir(), "flux_bench")
 os.makedirs(_BENCH_CACHE_DIR, exist_ok=True)
 
 
+KERNELS = [
+    {
+        "stem":        "dot",
+        "name":        "dot",
+        "description": "8-element dot product × 1,000,000 iterations — per-call overhead",
+    },
+    {
+        "stem":        "saxpy",
+        "name":        "saxpy",
+        "description": "sum(2·x + y) on 64-element vectors × 200,000 iterations — broadcast + add + reduce",
+    },
+    {
+        "stem":        "relu",
+        "name":        "relu",
+        "description": "sum(relu(x)) on 64-element vectors × 200,000 iterations — element-wise ML activation",
+    },
+    {
+        "stem":        "bigdot",
+        "name":        "bigdot",
+        "description": "512-element dot product × 50,000 iterations — same total FLOPs as `dot`, NumPy gets a fair shot",
+    },
+]
+
+
+def _run_one_kernel(stem: str, name: str, description: str) -> dict:
+    results: list[dict] = []
+
+    def run_one(impl: str, builder) -> None:
+        try:
+            cmd        = builder()
+            time_ms, out = _time_subprocess(cmd)
+            results.append({"name": impl, "time_ms": time_ms, "output": out, "error": None})
+        except Exception as e:
+            results.append({"name": impl, "time_ms": None, "output": None, "error": str(e)})
+
+    run_one("Flux",        lambda: [_ensure_flux_binary(stem, _BENCH_CACHE_DIR)])
+    run_one("C (gcc -O2)", lambda: [_ensure_c_binary  (stem, _BENCH_CACHE_DIR)])
+    run_one("NumPy",       lambda: [sys.executable, os.path.join(BENCH_DIR, f"{stem}.py")])
+
+    return {
+        "kernel":      name,
+        "description": description,
+        "results":     results,
+        "error":       None,
+    }
+
+
 @app.post("/benchmark")
 def run_benchmark():
-    """
-    Run the dot-product microbenchmark across three implementations.
+    """Run every registered kernel across Flux, C, and NumPy.
 
     Returns
     -------
         {
-          "kernel": "dot",
-          "description": "...",
-          "results": [
-            { "name": "Flux", "time_ms": float, "output": str, "error": str|None },
-            { "name": "C (gcc -O2)", ... },
-            { "name": "NumPy", ... }
+          "kernels": [
+            {
+              "kernel":      "<short name>",
+              "description": "<one-line description>",
+              "results":     [{name, time_ms, output, error}, ...],
+              "error":       null,
+            },
+            ...
           ],
-          "error": null
+          "error": null,
         }
     """
-    results: list[dict] = []
-
-    def run_one(name: str, builder) -> None:
-        try:
-            cmd        = builder()
-            time_ms, out = _time_subprocess(cmd)
-            results.append({"name": name, "time_ms": time_ms, "output": out, "error": None})
-        except Exception as e:
-            results.append({"name": name, "time_ms": None, "output": None, "error": str(e)})
-
-    run_one("Flux",         lambda: [_ensure_flux_binary(_BENCH_CACHE_DIR)])
-    run_one("C (gcc -O2)",  lambda: [_ensure_c_binary  (_BENCH_CACHE_DIR)])
-    run_one("NumPy",        lambda: [sys.executable, os.path.join(BENCH_DIR, "dot.py")])
-
-    return {
-        "kernel":      "dot",
-        "description": "1M iterations of an 8-element dot product (per-call overhead test)",
-        "results":     results,
-        "error":       None,
-    }
+    kernels = [_run_one_kernel(k["stem"], k["name"], k["description"]) for k in KERNELS]
+    return {"kernels": kernels, "error": None}

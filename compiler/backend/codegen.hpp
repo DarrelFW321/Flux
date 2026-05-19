@@ -63,6 +63,7 @@ private:
     llvm::Value* emit_array_literal(const mir::Inst& i);
     llvm::Value* emit_array_op     (const mir::Inst& i);
     llvm::Value* emit_array_copy   (const mir::Inst& i);
+    llvm::Value* emit_fused_loop   (const mir::Inst& i);
     llvm::Value* emit_reduce_sum   (const mir::Inst& i);
     llvm::Value* emit_reduce_dot   (const mir::Inst& i);
     llvm::Value* emit_index_load   (const mir::Inst& i);
