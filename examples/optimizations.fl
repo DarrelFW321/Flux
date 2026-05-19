@@ -1,0 +1,16 @@
+// Optimizations — constants folded at compile time (see MIR diff).
+
+fn scale(a: float[4], k: float) -> float[4] {
+  return a * k;
+}
+
+let x: float[4] = [1.0, 2.0, 3.0, 4.0];
+let y: float[4] = scale(x, 2.0);
+
+let n: int    = 2 + 3 * 4;
+let same: int = n + 0;
+let zero: int = n * 0;
+
+print(dot(x, y));
+print(y[2]);
+print(n + same + zero);

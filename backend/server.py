@@ -223,6 +223,19 @@ KERNELS = [
 ]
 
 
+def _read_benchmark_sources(stem: str) -> dict[str, str]:
+    """Load Flux, C, and NumPy sources for a benchmark kernel."""
+    out: dict[str, str] = {}
+    for key, ext in (("flux", "fl"), ("c", "c"), ("numpy", "py")):
+        path = os.path.join(BENCH_DIR, f"{stem}.{ext}")
+        try:
+            with open(path, encoding="utf-8") as f:
+                out[key] = f.read()
+        except OSError:
+            out[key] = ""
+    return out
+
+
 def _run_one_kernel(stem: str, name: str, description: str) -> dict:
     results: list[dict] = []
 
@@ -241,6 +254,7 @@ def _run_one_kernel(stem: str, name: str, description: str) -> dict:
     return {
         "kernel":      name,
         "description": description,
+        "sources":     _read_benchmark_sources(stem),
         "results":     results,
         "error":       None,
     }

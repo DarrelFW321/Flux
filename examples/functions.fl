@@ -1,0 +1,16 @@
+// Functions — array arguments and return.
+
+fn scale(a: float[4], k: float) -> float[4] {
+  return a * k;
+}
+
+fn add_bias(v: float[4], b: float) -> float[4] {
+  return v + b;
+}
+
+let x: float[4] = [1.0, 2.0, 3.0, 4.0];
+let y: float[4] = scale(x, 0.5);
+let z: float[4] = add_bias(y, 1.0);
+
+print(dot(x, z));
+print(sum(z));

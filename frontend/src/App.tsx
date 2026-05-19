@@ -5,6 +5,9 @@ import SyntaxHighlighter from 'react-syntax-highlighter';
 import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 import { diffLines } from 'diff';
 import { AstGraph } from './AstGraph';
+import { Sidebar, type SidebarView } from './components/Sidebar';
+import { DocsPane } from './components/DocsPane';
+import { EXAMPLES, DEFAULT_EXAMPLE_ID, type FluxExample } from './data/examples';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -44,9 +47,16 @@ interface BenchmarkRow {
   error: string | null;
 }
 
+interface BenchmarkSources {
+  flux: string;
+  c: string;
+  numpy: string;
+}
+
 interface KernelReport {
   kernel: string;
   description: string;
+  sources?: BenchmarkSources;
   results: BenchmarkRow[];
   error: string | null;
 }
@@ -62,23 +72,13 @@ type MirView = 'optimized' | 'raw' | 'diff';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_SOURCE = `fn scale(a: float[4], k: float) -> float[4] {
-  return a * k;
-}
-
-let x: float[4] = [1.0, 2.0, 3.0, 4.0];
-let y: float[4] = scale(x, 2.0);
-
-// Optimization passes will fold these at compile time.
-let n: int     = 2 + 3 * 4;
-let same: int  = n + 0;
-let zero: int  = n * 0;
-
-print(dot(x, y));
-print(y[2]);
-print(n + same + zero);`;
+const defaultExample = EXAMPLES.find(e => e.id === DEFAULT_EXAMPLE_ID) ?? EXAMPLES[0];
 
 const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL ?? '';
+
+type InspectorGroup = 'pipeline' | 'run' | 'benchmark';
+
+const PIPELINE_TABS: Tab[] = ['tokens', 'ast', 'mir', 'ir'];
 
 // react-json-tree theme tuned to match the minimal dark palette.
 const JSON_THEME = {
@@ -139,7 +139,11 @@ const beforeEditorMount = (monaco: Monaco) => {
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [source, setSource]           = useState(DEFAULT_SOURCE);
+  const [source, setSource]           = useState(defaultExample.source);
+  const [selectedExampleId, setSelectedExampleId] = useState(defaultExample.id);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('examples');
+  const [activeDocId, setActiveDocId] = useState('overview');
+  const [inspectorGroup, setInspectorGroup] = useState<InspectorGroup>('pipeline');
   const [result, setResult]           = useState<FrontendResult>({
     tokens: null, ast: null, mir_raw: null, mir_optimized: null,
     passes: null, pass_steps: null, error: null,
@@ -222,6 +226,19 @@ export default function App() {
     }
   };
 
+  const loadExample = (ex: FluxExample) => {
+    setSelectedExampleId(ex.id);
+    setSource(ex.source);
+    setSidebarView('examples');
+  };
+
+  const selectInspectorTab = (tab: Tab) => {
+    if (tab === 'output') setInspectorGroup('run');
+    else if (tab === 'benchmark') setInspectorGroup('benchmark');
+    else setInspectorGroup('pipeline');
+    setActiveTab(tab);
+  };
+
   const fetchIR = async () => {
     if (!BACKEND_URL) { setIrError('VITE_BACKEND_URL is not set.'); return; }
     setIrLoading(true); setIrError(''); setIr('');
@@ -247,8 +264,16 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark">flux</span>
           <span className="brand-sep">/</span>
-          <span className="brand-sub">compiler pipeline</span>
+          <span className="brand-sub">compiler visualizer</span>
         </div>
+        <nav className="header-nav">
+          <button type="button" className="header-link" onClick={() => setSidebarView('examples')}>
+            Examples
+          </button>
+          <button type="button" className="header-link" onClick={() => setSidebarView('docs')}>
+            Docs
+          </button>
+        </nav>
         <div className="header-meta">
           <span className={`status-dot ${wasmReady ? 'ok' : 'warn'}`} aria-hidden />
           <span>{wasmReady ? 'wasm ready' : 'wasm loading'}</span>
@@ -256,47 +281,90 @@ export default function App() {
       </header>
 
       <main className="workspace">
-        {/* ── Editor ────────────────────────────────────────────────────── */}
-        <section className="pane editor-pane">
-          <Editor
-            height="100%"
-            defaultLanguage="rust"
-            theme="flux-dark"
-            value={source}
-            beforeMount={beforeEditorMount}
-            onChange={v => setSource(v ?? '')}
-            options={{
-              fontSize: 13,
-              fontFamily: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace",
-              fontLigatures: true,
-              minimap: { enabled: false },
-              scrollBeyondLastLine: false,
-              wordWrap: 'on',
-              padding: { top: 16, bottom: 16 },
-              renderLineHighlight: 'gutter',
-              smoothScrolling: true,
-              cursorBlinking: 'smooth',
-              cursorSmoothCaretAnimation: 'on',
-              guides: { indentation: false },
-              overviewRulerLanes: 0,
-              hideCursorInOverviewRuler: true,
-              scrollbar: { vertical: 'auto', horizontal: 'auto', verticalScrollbarSize: 10 },
-            }}
-          />
+        <Sidebar
+          view={sidebarView}
+          onViewChange={setSidebarView}
+          selectedExampleId={selectedExampleId}
+          onSelectExample={loadExample}
+          activeDocId={activeDocId}
+          onSelectDoc={id => { setActiveDocId(id); setSidebarView('docs'); }}
+        />
+
+        <section className="pane center-pane">
+          {sidebarView === 'docs' ? (
+            <DocsPane activeDocId={activeDocId} />
+          ) : (
+            <>
+              <div className="editor-toolbar">
+                <span className="editor-label">
+                  {EXAMPLES.find(e => e.id === selectedExampleId)?.title ?? 'Editor'}
+                </span>
+              </div>
+              <Editor
+                height="100%"
+                defaultLanguage="rust"
+                theme="flux-dark"
+                value={source}
+                beforeMount={beforeEditorMount}
+                onChange={v => setSource(v ?? '')}
+                options={{
+                  fontSize: 13,
+                  fontFamily: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace",
+                  fontLigatures: true,
+                  minimap: { enabled: false },
+                  scrollBeyondLastLine: false,
+                  wordWrap: 'on',
+                  padding: { top: 16, bottom: 16 },
+                  renderLineHighlight: 'gutter',
+                  smoothScrolling: true,
+                  cursorBlinking: 'smooth',
+                  cursorSmoothCaretAnimation: 'on',
+                  guides: { indentation: false },
+                  overviewRulerLanes: 0,
+                  hideCursorInOverviewRuler: true,
+                  scrollbar: { vertical: 'auto', horizontal: 'auto', verticalScrollbarSize: 10 },
+                }}
+              />
+            </>
+          )}
         </section>
 
-        {/* ── Output panel ──────────────────────────────────────────────── */}
-        <section className="pane output-pane">
-          <div className="tab-bar">
-            {(['tokens', 'ast', 'mir', 'ir', 'output', 'benchmark'] as Tab[]).map(t => (
-              <button
-                key={t}
-                className={`tab-btn ${activeTab === t ? 'active' : ''}`}
-                onClick={() => setActiveTab(t)}
-              >
-                {t}
-              </button>
-            ))}
+        <section className="pane inspector-pane">
+          <div className="inspector-chrome">
+            <div className="inspector-groups">
+              {([
+                ['pipeline', 'Pipeline', PIPELINE_TABS],
+                ['run', 'Run', ['output'] as Tab[]],
+                ['benchmark', 'Benchmark', ['benchmark'] as Tab[]],
+              ] as const).map(([group, label, tabs]) => (
+                <div key={group} className="inspector-group">
+                  <button
+                    type="button"
+                    className={`inspector-group-btn ${inspectorGroup === group ? 'active' : ''}`}
+                    onClick={() => {
+                      setInspectorGroup(group);
+                      if (!tabs.includes(activeTab)) setActiveTab(tabs[0]);
+                    }}
+                  >
+                    {label}
+                  </button>
+                  {inspectorGroup === group && (
+                    <div className="tab-bar tab-bar-sub">
+                      {tabs.map(t => (
+                        <button
+                          key={t}
+                          type="button"
+                          className={`tab-btn ${activeTab === t ? 'active' : ''}`}
+                          onClick={() => selectInspectorTab(t)}
+                        >
+                          {t}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="panel-body">
@@ -746,7 +814,12 @@ interface KernelTableProps {
   report: KernelReport;
 }
 
+type BenchSourceLang = 'flux' | 'c' | 'numpy';
+
 function KernelTable({ report }: KernelTableProps) {
+  const [showSources, setShowSources] = useState(false);
+  const [sourceLang, setSourceLang] = useState<BenchSourceLang>('flux');
+
   const fastestMs = useMemo(() => {
     const valid = report.results
       .map(r => r.time_ms)
@@ -754,12 +827,42 @@ function KernelTable({ report }: KernelTableProps) {
     return valid.length ? Math.min(...valid) : null;
   }, [report]);
 
+  const sourceText = report.sources?.[sourceLang] ?? '';
+
   return (
     <div className="kernel-block">
       <header className="kernel-header">
         <span className="kernel-title">{report.kernel}</span>
         <span className="kernel-desc">{report.description}</span>
+        {report.sources && (
+          <button
+            type="button"
+            className="kernel-source-toggle"
+            onClick={() => setShowSources(s => !s)}
+          >
+            {showSources ? 'Hide source' : 'View source'}
+          </button>
+        )}
       </header>
+
+      {showSources && report.sources && (
+        <div className="kernel-sources">
+          <div className="kernel-source-tabs">
+            {(['flux', 'c', 'numpy'] as BenchSourceLang[]).map(lang => (
+              <button
+                key={lang}
+                type="button"
+                className={`subtab-btn ${sourceLang === lang ? 'active' : ''}`}
+                onClick={() => setSourceLang(lang)}
+              >
+                {lang === 'flux' ? 'Flux' : lang === 'c' ? 'C' : 'NumPy'}
+              </button>
+            ))}
+          </div>
+          <pre className="kernel-source-code"><code>{sourceText}</code></pre>
+        </div>
+      )}
+
       <table className="bench-table">
         <thead>
           <tr>

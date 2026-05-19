@@ -1,0 +1,25 @@
+// Control flow — if / else on scalars.
+
+fn abs_float(x: float) -> float {
+  if x < 0.0 {
+    return 0.0 - x;
+  }
+  return x;
+}
+
+fn clamp_nonneg(v: float[4]) -> float[4] {
+  let out: float[4] = [0.0, 0.0, 0.0, 0.0];
+  let i: int = 0;
+  while i < 4 {
+    let x: float = v[i];
+    if x > 0.0 {
+      out[i] = x;
+    }
+    i = i + 1;
+  }
+  return out;
+}
+
+let raw: float[4] = [-1.0, 2.0, -3.0, 4.0];
+let pos: float[4] = clamp_nonneg(raw);
+print(sum(pos));

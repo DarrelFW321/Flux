@@ -1,0 +1,8 @@
+// Hello — scalars, print, and a simple function.
+
+fn double(n: int) -> int {
+  return n * 2;
+}
+
+let x: int = 21;
+print(double(x));

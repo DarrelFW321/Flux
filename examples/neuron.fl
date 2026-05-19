@@ -1,0 +1,19 @@
+// Neuron-style kernel — weighted sum + ReLU (scalar loop over a tiny layer).
+
+fn relu(x: float) -> float {
+  if x > 0.0 {
+    return x;
+  }
+  return 0.0;
+}
+
+fn neuron(inp: float[4], w: float[4], bias: float) -> float {
+  let z: float = dot(inp, w) + bias;
+  return relu(z);
+}
+
+let input: float[4] = [1.0, 0.5, -0.5, 2.0];
+let weights: float[4] = [0.25, 0.5, -0.25, 0.1];
+let out: float = neuron(input, weights, 0.1);
+
+print(out);
