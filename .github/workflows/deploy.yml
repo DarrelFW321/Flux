@@ -23,6 +23,7 @@ jobs:
         run: |
           emcmake cmake -S wasm/ -B build_wasm -DCMAKE_BUILD_TYPE=Release
           cmake --build build_wasm --parallel
+          mkdir -p frontend/public
           cp build_wasm/flux_wasm.js   frontend/public/
           cp build_wasm/flux_wasm.wasm frontend/public/
 
