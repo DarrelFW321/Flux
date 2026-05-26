@@ -10,6 +10,8 @@ interface SidebarProps {
   onSelectExample: (ex: FluxExample) => void;
   activeDocId: string;
   onSelectDoc: (id: string) => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }
 
 export function Sidebar({
@@ -19,7 +21,25 @@ export function Sidebar({
   onSelectExample,
   activeDocId,
   onSelectDoc,
+  collapsed,
+  onToggleCollapse,
 }: SidebarProps) {
+  if (collapsed) {
+    return (
+      <aside className="sidebar sidebar--collapsed">
+        <button
+          type="button"
+          className="sidebar-collapse-btn"
+          onClick={onToggleCollapse}
+          title="Show panel"
+          aria-label="Show panel"
+        >
+          ›
+        </button>
+      </aside>
+    );
+  }
+
   return (
     <aside className="sidebar">
       <div className="sidebar-switch">
@@ -36,6 +56,15 @@ export function Sidebar({
           onClick={() => onViewChange('docs')}
         >
           Docs
+        </button>
+        <button
+          type="button"
+          className="sidebar-collapse-btn sidebar-collapse-btn--inline"
+          onClick={onToggleCollapse}
+          title="Hide panel"
+          aria-label="Hide panel"
+        >
+          ‹
         </button>
       </div>
 

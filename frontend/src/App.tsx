@@ -56,8 +56,6 @@ const defaultExample = EXAMPLES.find(e => e.id === DEFAULT_EXAMPLE_ID) ?? EXAMPL
 const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL ?? '';
 
 const PIPELINE_TABS: Tab[] = ['tokens', 'ast', 'mir', 'ir'];
-const WELCOME_DISMISS_KEY = 'flux-welcome-dismissed';
-
 // react-json-tree theme tuned to match the minimal dark palette.
 const JSON_THEME = {
   scheme: 'flux',
@@ -119,13 +117,14 @@ const beforeEditorMount = (monaco: Monaco) => {
 export default function App() {
   const [source, setSource]           = useState(defaultExample.source);
   const [selectedExampleId, setSelectedExampleId] = useState(defaultExample.id);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('examples');
+  const [sidebarView, setSidebarView]         = useState<SidebarView>('examples');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [splitPx, setSplitPx]               = useState<number | null>(null);
+  const workspaceRef                        = useRef<HTMLElement>(null);
   const [activeDocId, setActiveDocId] = useState('overview');
   const [lastPipelineTab, setLastPipelineTab] = useState<Tab>('tokens');
   const [appPage, setAppPage]             = useState<AppPage>('playground');
-  const [welcomeDismissed, setWelcomeDismissed] = useState(() => {
-    try { return localStorage.getItem(WELCOME_DISMISS_KEY) === '1'; } catch { return false; }
-  });
+  const [welcomeCollapsed, setWelcomeCollapsed] = useState(false);
   const [result, setResult]           = useState<FrontendResult>({
     tokens: null, ast: null, mir_raw: null, mir_optimized: null,
     passes: null, pass_steps: null, error: null,
@@ -154,10 +153,30 @@ export default function App() {
       .catch(() => {/* WASM unavailable in local dev without a build */});
   }, []);
 
-  const dismissWelcome = () => {
-    setWelcomeDismissed(true);
-    try { localStorage.setItem(WELCOME_DISMISS_KEY, '1'); } catch { /* ignore */ }
-  };
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const sidebarW = sidebarCollapsed ? 32 : 240;
+
+    const onMove = (ev: MouseEvent) => {
+      if (!workspaceRef.current) return;
+      const rect = workspaceRef.current.getBoundingClientRect();
+      const available = rect.width - sidebarW - 4;
+      const offset    = ev.clientX - rect.left - sidebarW;
+      setSplitPx(Math.max(200, Math.min(available - 200, offset)));
+    };
+
+    const onUp = () => {
+      document.body.style.cursor    = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    };
+
+    document.body.style.cursor    = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  }, [sidebarCollapsed]);
 
   const runFrontend = useCallback((src: string) => {
     if (!fluxRef.current) return;
@@ -273,13 +292,13 @@ export default function App() {
         </div>
       </header>
 
-      {!welcomeDismissed && (
-        <WelcomeBanner
-          onDismiss={dismissWelcome}
-          onGoPlayground={() => { setAppPage('playground'); dismissWelcome(); }}
-          onGoBenchmarks={() => { setAppPage('benchmarks'); dismissWelcome(); }}
-        />
-      )}
+      <WelcomeBanner
+        collapsed={welcomeCollapsed}
+        onCollapse={() => setWelcomeCollapsed(true)}
+        onExpand={() => setWelcomeCollapsed(false)}
+        onGoPlayground={() => { setAppPage('playground'); setWelcomeCollapsed(true); }}
+        onGoBenchmarks={() => { setAppPage('benchmarks'); setWelcomeCollapsed(true); }}
+      />
 
       {appPage === 'benchmarks' ? (
         <main className="benchmarks-workspace">
@@ -291,7 +310,7 @@ export default function App() {
           />
         </main>
       ) : (
-      <main className="workspace">
+      <main className="workspace" ref={workspaceRef}>
         <Sidebar
           view={sidebarView}
           onViewChange={setSidebarView}
@@ -299,9 +318,14 @@ export default function App() {
           onSelectExample={loadExample}
           activeDocId={activeDocId}
           onSelectDoc={id => { setActiveDocId(id); setSidebarView('docs'); }}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(c => !c)}
         />
 
-        <section className="pane center-pane">
+        <section
+          className="pane center-pane"
+          style={splitPx !== null ? { flex: `0 0 ${splitPx}px` } : undefined}
+        >
           {sidebarView === 'docs' ? (
             <DocsPane activeDocId={activeDocId} />
           ) : (
@@ -311,6 +335,7 @@ export default function App() {
                   {EXAMPLES.find(e => e.id === selectedExampleId)?.title ?? 'Editor'}
                 </span>
               </div>
+              <div style={{ flex: 1, minHeight: 0 }}>
               <Editor
                 height="100%"
                 defaultLanguage="rust"
@@ -336,11 +361,21 @@ export default function App() {
                   scrollbar: { vertical: 'auto', horizontal: 'auto', verticalScrollbarSize: 10 },
                 }}
               />
+              </div>
             </>
           )}
         </section>
 
-        <section className="pane inspector-pane">
+        <div
+          className="resize-handle"
+          onMouseDown={startResize}
+          role="separator"
+          aria-label="Drag to resize panels"
+        />
+        <section
+          className="pane inspector-pane"
+          style={splitPx !== null ? { flex: 1, minWidth: 0, maxWidth: 'none' } : undefined}
+        >
           <InspectorNav
             activeTab={activeTab}
             lastPipelineTab={lastPipelineTab as 'tokens' | 'ast' | 'mir' | 'ir'}

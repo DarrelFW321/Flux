@@ -1,10 +1,29 @@
 interface WelcomeBannerProps {
-  onDismiss: () => void;
+  collapsed: boolean;
+  onCollapse: () => void;
+  onExpand: () => void;
   onGoPlayground?: () => void;
   onGoBenchmarks?: () => void;
 }
 
-export function WelcomeBanner({ onDismiss, onGoPlayground, onGoBenchmarks }: WelcomeBannerProps) {
+export function WelcomeBanner({
+  collapsed,
+  onCollapse,
+  onExpand,
+  onGoPlayground,
+  onGoBenchmarks,
+}: WelcomeBannerProps) {
+  if (collapsed) {
+    return (
+      <section className="welcome-banner welcome-banner--collapsed" aria-label="About Flux">
+        <span className="welcome-collapsed-label">Flux guide</span>
+        <button type="button" className="welcome-show-btn" onClick={onExpand}>
+          Show ▼
+        </button>
+      </section>
+    );
+  }
+
   return (
     <section className="welcome-banner" aria-label="About Flux">
       <div className="welcome-content">
@@ -43,8 +62,8 @@ export function WelcomeBanner({ onDismiss, onGoPlayground, onGoBenchmarks }: Wel
           </div>
         )}
       </div>
-      <button type="button" className="welcome-dismiss" onClick={onDismiss} aria-label="Dismiss intro">
-        Dismiss
+      <button type="button" className="welcome-dismiss" onClick={onCollapse} aria-label="Collapse guide">
+        ▲ Collapse
       </button>
     </section>
   );
