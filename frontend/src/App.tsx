@@ -119,6 +119,8 @@ export default function App() {
   const [selectedExampleId, setSelectedExampleId] = useState(defaultExample.id);
   const [sidebarView, setSidebarView]         = useState<SidebarView>('examples');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobilePanel, setMobilePanel]         = useState<'editor' | 'inspect'>('editor');
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [splitPx, setSplitPx]               = useState<number | null>(null);
   const workspaceRef                        = useRef<HTMLElement>(null);
   const [activeDocId, setActiveDocId] = useState('overview');
@@ -145,6 +147,10 @@ export default function App() {
 
   const fluxRef  = useRef<FluxWasm | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    if (window.matchMedia('(max-width: 767px)').matches) setWelcomeCollapsed(true);
+  }, []);
 
   useEffect(() => {
     if (typeof FluxModule === 'undefined') return;
@@ -243,6 +249,11 @@ export default function App() {
     setActiveTab(tab);
   };
 
+  const mobileGoInspect = (tab: Tab) => {
+    selectInspectorTab(tab);
+    setMobilePanel('inspect');
+  };
+
   const fetchIR = async () => {
     if (!BACKEND_URL) { setIrError('VITE_BACKEND_URL is not set.'); return; }
     setIrLoading(true); setIrError(''); setIr('');
@@ -265,6 +276,14 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
+        <button
+          type="button"
+          className="mobile-menu-btn"
+          onClick={() => setMobileDrawerOpen(true)}
+          aria-label="Open examples"
+        >
+          ☰
+        </button>
         <div className="brand">
           <span className="brand-mark">flux</span>
           <span className="brand-sep">/</span>
@@ -310,16 +329,20 @@ export default function App() {
           />
         </main>
       ) : (
-      <main className="workspace" ref={workspaceRef}>
+      <main className={`workspace workspace--${mobilePanel}`} ref={workspaceRef}>
+        {mobileDrawerOpen && (
+          <div className="mobile-backdrop" onClick={() => setMobileDrawerOpen(false)} />
+        )}
         <Sidebar
           view={sidebarView}
           onViewChange={setSidebarView}
           selectedExampleId={selectedExampleId}
-          onSelectExample={loadExample}
+          onSelectExample={ex => { loadExample(ex); setMobileDrawerOpen(false); }}
           activeDocId={activeDocId}
-          onSelectDoc={id => { setActiveDocId(id); setSidebarView('docs'); }}
+          onSelectDoc={id => { setActiveDocId(id); setSidebarView('docs'); setMobileDrawerOpen(false); }}
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed(c => !c)}
+          mobileOpen={mobileDrawerOpen}
         />
 
         <section
@@ -538,6 +561,33 @@ export default function App() {
 
           </div>
         </section>
+
+        <nav className="mobile-nav" aria-label="Mobile navigation">
+          <button
+            type="button"
+            className={`mobile-nav-btn ${mobilePanel === 'editor' ? 'active' : ''}`}
+            onClick={() => setMobilePanel('editor')}
+          >
+            <span className="mobile-nav-icon">{`</>`}</span>
+            Code
+          </button>
+          <button
+            type="button"
+            className={`mobile-nav-btn ${mobilePanel === 'inspect' && activeTab !== 'output' ? 'active' : ''}`}
+            onClick={() => mobileGoInspect(lastPipelineTab as Tab)}
+          >
+            <span className="mobile-nav-icon">⬡</span>
+            Pipeline
+          </button>
+          <button
+            type="button"
+            className={`mobile-nav-btn ${mobilePanel === 'inspect' && activeTab === 'output' ? 'active' : ''}`}
+            onClick={() => mobileGoInspect('output')}
+          >
+            <span className="mobile-nav-icon">▶</span>
+            Run
+          </button>
+        </nav>
       </main>
       )}
 

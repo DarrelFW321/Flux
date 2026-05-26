@@ -12,6 +12,7 @@ interface SidebarProps {
   onSelectDoc: (id: string) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  mobileOpen?: boolean;
 }
 
 export function Sidebar({
@@ -23,8 +24,9 @@ export function Sidebar({
   onSelectDoc,
   collapsed,
   onToggleCollapse,
+  mobileOpen,
 }: SidebarProps) {
-  if (collapsed) {
+  if (collapsed && !mobileOpen) {
     return (
       <aside className="sidebar sidebar--collapsed">
         <button
@@ -41,7 +43,7 @@ export function Sidebar({
   }
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${mobileOpen ? ' sidebar--mobile-open' : ''}`}>
       <div className="sidebar-switch">
         <button
           type="button"
