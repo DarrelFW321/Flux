@@ -9,15 +9,19 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(Catch2)
 
 # ── Unit tests ────────────────────────────────────────────────────────────────
-# Only the lexer/parser/typechecker are exercised here — they have no LLVM
-# dependency, so the test binary builds quickly and stays portable.
+# Frontend + midend only — no LLVM dependency, so the test binary builds
+# quickly and stays portable.
 add_executable(flux_tests
     test_lexer.cpp
     test_parser.cpp
     test_typechecker.cpp
+    test_passes.cpp
     ${CMAKE_SOURCE_DIR}/compiler/frontend/lexer.cpp
     ${CMAKE_SOURCE_DIR}/compiler/frontend/parser.cpp
     ${CMAKE_SOURCE_DIR}/compiler/frontend/typechecker.cpp
+    ${CMAKE_SOURCE_DIR}/compiler/midend/ir.cpp
+    ${CMAKE_SOURCE_DIR}/compiler/midend/lower_from_ast.cpp
+    ${CMAKE_SOURCE_DIR}/compiler/midend/passes.cpp
 )
 
 target_include_directories(flux_tests PRIVATE ${CMAKE_SOURCE_DIR}/compiler)

@@ -328,10 +328,11 @@ static bool collect_array_op_chain(Function& fn,
     while (true) {
         Inst* def = find_def(fn, cur);
         if (!def || !is_fusable_array_op(*def)) return false;
-        if (!chain.empty()) {
-            auto uit = uses.find(cur);
-            if (uit == uses.end() || uit->second != 1) return false;
-        }
+        // Every value in the chain — including the head — must have exactly
+        // one use: fusion deletes these defs, so any other user (e.g. an
+        // index.load on the intermediate array) would be left dangling.
+        auto uit = uses.find(cur);
+        if (uit == uses.end() || uit->second != 1) return false;
         chain.push_back(def);
         ValueId prev = NO_VALUE;
         for (ValueId op : def->operands) {
