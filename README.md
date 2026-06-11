@@ -36,6 +36,7 @@ Flux speaks **fixed-size 1D arrays**, `sum` / `dot`, and `while` loops — enoug
 ## Try it
 
 **Visualizer** (needs the backend for Run / IR / benchmarks):
+<img width="1917" height="862" alt="image" src="https://github.com/user-attachments/assets/8d9402b6-f478-4c5d-a661-bd4a7dcb8ade" />
 
 ```bash
 cd frontend
