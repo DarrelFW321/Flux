@@ -60,3 +60,10 @@ if(WIN32)
         )
     endforeach()
 endif()
+
+# ── Unit tests ────────────────────────────────────────────────────────────────
+option(FLUX_BUILD_TESTS "Build the Catch2 unit test suite" ON)
+if(FLUX_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

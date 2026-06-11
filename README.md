@@ -60,6 +60,13 @@ cmake --build build
 ./build/flux --compile examples/hello.fl -o hello
 ```
 
+**Unit tests** (lexer, parser, typechecker — Catch2, fetched automatically):
+
+```bash
+cmake --build build --target flux_tests
+ctest --test-dir build
+```
+
 ---
 
 ## Repo map
