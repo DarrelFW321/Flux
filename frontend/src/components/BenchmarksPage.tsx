@@ -152,9 +152,10 @@ function KernelTable({ report }: { report: KernelReport }) {
             const width    = ok && fastestMs != null
               ? Math.max(2, (fastestMs / row.time_ms!) * 100)
               : 0;
+            const isFlux = row.name === 'Flux';
             return (
               <tr key={row.name}>
-                <td className="bench-name">{row.name}</td>
+                <td className={`bench-name${isFlux ? ' flux' : ''}`}>{row.name}</td>
                 <td className="num">{ok ? `${row.time_ms!.toFixed(1)} ms` : '—'}</td>
                 <td className="num">
                   {relative != null
@@ -165,7 +166,7 @@ function KernelTable({ report }: { report: KernelReport }) {
                   {ok && (
                     <div className="bench-bar-track">
                       <div
-                        className={`bench-bar ${relative === 1 ? 'best' : ''}`}
+                        className={`bench-bar ${relative === 1 ? 'best' : isFlux ? 'flux' : ''}`}
                         style={{ width: `${width}%` }}
                       />
                     </div>

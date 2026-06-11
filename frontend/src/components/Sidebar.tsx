@@ -26,24 +26,26 @@ export function Sidebar({
   onToggleCollapse,
   mobileOpen,
 }: SidebarProps) {
-  if (collapsed && !mobileOpen) {
-    return (
-      <aside className="sidebar sidebar--collapsed">
-        <button
-          type="button"
-          className="sidebar-collapse-btn"
-          onClick={onToggleCollapse}
-          title="Show panel"
-          aria-label="Show panel"
-        >
-          ›
-        </button>
-      </aside>
-    );
-  }
+  const isCollapsed = collapsed && !mobileOpen;
 
+  // Single element in both states so the width change can animate.
   return (
-    <aside className={`sidebar${mobileOpen ? ' sidebar--mobile-open' : ''}`}>
+    <aside
+      className={
+        `sidebar${isCollapsed ? ' sidebar--collapsed' : ''}` +
+        `${mobileOpen ? ' sidebar--mobile-open' : ''}`
+      }
+    >
+      <button
+        type="button"
+        className="sidebar-collapse-btn sidebar-expand-btn"
+        onClick={onToggleCollapse}
+        title="Show panel"
+        aria-label="Show panel"
+      >
+        »
+      </button>
+
       <div className="sidebar-switch">
         <button
           type="button"
@@ -66,7 +68,7 @@ export function Sidebar({
           title="Hide panel"
           aria-label="Hide panel"
         >
-          ‹
+          «
         </button>
       </div>
 

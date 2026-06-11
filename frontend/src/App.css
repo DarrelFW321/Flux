@@ -16,6 +16,12 @@
   --danger-bg:   rgba(248, 113, 113, 0.08);
   --success:     #86efac;
 
+  --accent:        #6366f1;
+  --accent-hover:  #818cf8;
+  --accent-soft:   #a5b4fc;
+  --accent-bg:     rgba(99, 102, 241, 0.14);
+  --accent-border: rgba(129, 140, 248, 0.35);
+
   --cat-decl:    #a5b4fc;
   --cat-stmt:    #c4b5fd;
   --cat-expr:    #93c5fd;
@@ -41,7 +47,23 @@ html, body {
 
 #root { height: 100vh; display: flex; flex-direction: column; }
 
-button { font-family: inherit; }
+button {
+  font-family: inherit;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes backdrop-in {
+  from { opacity: 0; }
+}
+
+@keyframes drawer-in {
+  from { transform: translateX(-100%); }
+}
 
 /* ── App shell ───────────────────────────────────────────────────────────── */
 .app { height: 100vh; display: flex; flex-direction: column; background: var(--bg-0); }
@@ -81,8 +103,8 @@ button { font-family: inherit; }
   color: var(--text-0);
 }
 .header-page-btn.active {
-  background: var(--bg-2);
-  color: var(--text-0);
+  background: var(--accent-bg);
+  color: var(--accent-soft);
 }
 
 .brand {
@@ -92,10 +114,10 @@ button { font-family: inherit; }
 }
 
 .brand-mark {
-  font-weight: 600;
+  font-weight: 700;
   font-size: 15px;
   letter-spacing: -0.01em;
-  color: var(--text-0);
+  color: var(--accent-soft);
 }
 
 .brand-sep {
@@ -119,6 +141,24 @@ button { font-family: inherit; }
   font-feature-settings: 'tnum';
 }
 
+.header-gh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.header-gh:hover {
+  color: var(--text-0);
+  background: var(--bg-2);
+}
+
 .status-dot {
   width: 7px;
   height: 7px;
@@ -137,6 +177,11 @@ button { font-family: inherit; }
   overflow: hidden;
 }
 
+.workspace {
+  padding: 12px 16px 16px;
+  gap: 12px;
+}
+
 .benchmarks-workspace {
   flex-direction: column;
   background: var(--bg-0);
@@ -147,7 +192,10 @@ button { font-family: inherit; }
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 24px 28px;
+  padding: 28px 32px;
+  width: 100%;
+  max-width: 1160px;
+  margin: 0 auto;
   overflow: hidden;
 }
 
@@ -202,57 +250,96 @@ button { font-family: inherit; }
 
 /* ── Resize handle ───────────────────────────────────────────────────────── */
 .resize-handle {
-  width: 4px;
+  width: 12px;
+  margin: 0 -12px;
   flex-shrink: 0;
   cursor: col-resize;
-  background: var(--border-1);
-  transition: background 0.15s;
+  background: transparent;
   position: relative;
   z-index: 10;
 }
-.resize-handle::before {
+.resize-handle::after {
   content: '';
   position: absolute;
-  inset: 0 -4px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 48px;
+  border-radius: 2px;
+  background: var(--border-2);
+  transition: background 0.15s, height 0.15s;
 }
-.resize-handle:hover { background: var(--text-3); }
+.resize-handle:hover::after {
+  background: var(--accent-soft);
+  height: 72px;
+}
 
 .pane {
   display: flex;
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+  background: var(--bg-1);
+  border: 1px solid var(--border-1);
+  border-radius: 12px;
 }
 
 .center-pane {
   flex: 1.1;
-  border-right: 1px solid var(--border-1);
-  background: var(--bg-0);
 }
 
 .inspector-pane {
   flex: 1;
   min-width: 320px;
   max-width: 50%;
-  background: var(--bg-0);
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
 .sidebar {
+  position: relative;
   width: 240px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-1);
-  border-right: 1px solid var(--border-1);
+  border: 1px solid var(--border-1);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: width 0.22s ease;
 }
 
 .sidebar--collapsed {
-  width: 32px;
-  align-items: center;
-  justify-content: flex-start;
-  padding-top: 8px;
+  width: 36px;
 }
+
+/* Expand chevron — only visible in the collapsed state. */
+.sidebar-collapse-btn.sidebar-expand-btn {
+  display: none;
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.sidebar--collapsed .sidebar-collapse-btn.sidebar-expand-btn { display: flex; }
+
+/* Keep inner content at full width so it slides rather than reflows
+   while the panel width animates; fade it out when collapsing. */
+.sidebar-switch,
+.sidebar-body {
+  width: 238px;
+  transition: opacity 0.15s ease, visibility 0.15s;
+}
+
+.sidebar--collapsed .sidebar-switch,
+.sidebar--collapsed .sidebar-body {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.sidebar--mobile-open .sidebar-switch,
+.sidebar--mobile-open .sidebar-body { width: auto; }
 
 .sidebar-collapse-btn {
   display: flex;
@@ -275,6 +362,14 @@ button { font-family: inherit; }
 
 .sidebar-collapse-btn--inline {
   margin-left: auto;
+  align-self: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-2);
+  font-size: 12px;
+}
+.sidebar-collapse-btn--inline:hover {
+  border-color: var(--text-3);
 }
 
 .sidebar-switch {
@@ -332,8 +427,8 @@ button { font-family: inherit; }
   border-color: var(--border-1);
 }
 .example-item.active, .doc-item.active {
-  background: var(--bg-2);
-  border-color: var(--border-2);
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
   color: var(--text-0);
 }
 
@@ -386,22 +481,63 @@ button { font-family: inherit; }
 
 .docs-pane {
   flex: 1;
-  overflow: auto;
-  padding: 24px 28px;
+  overflow-y: auto;
+  padding: 28px 32px;
+  scroll-behavior: smooth;
+  max-width: 640px;
+  scrollbar-width: none;
 }
+.docs-pane::-webkit-scrollbar { display: none; }
+
+.docs-section {
+  margin-bottom: 30px;
+  padding-bottom: 26px;
+  border-bottom: 1px solid var(--border-1);
+  scroll-margin-top: 8px;
+}
+.docs-section:last-of-type { border-bottom: none; }
 
 .docs-title {
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 600;
-  margin-bottom: 16px;
-  letter-spacing: -0.02em;
+  margin-bottom: 12px;
+  letter-spacing: -0.01em;
+  color: var(--text-0);
 }
 
 .docs-body p {
   color: var(--text-1);
-  line-height: 1.65;
-  margin-bottom: 14px;
-  font-size: 13.5px;
+  line-height: 1.75;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.docs-body p:last-child { margin-bottom: 0; }
+
+.docs-body p code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 2px 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  color: var(--cat-expr);
+  white-space: nowrap;
+}
+
+.docs-code {
+  margin: 4px 0 14px;
+  padding: 12px 16px;
+  background: var(--bg-0);
+  border: 1px solid var(--border-1);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.docs-code code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: #d4d4d8;
+  white-space: pre;
 }
 
 .docs-footer {
@@ -420,77 +556,45 @@ button { font-family: inherit; }
 
 /* ── Welcome banner ──────────────────────────────────────────────────────── */
 .welcome-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 20px;
-  padding: 20px 24px;
+  margin: 12px 16px 0;
+  padding: 8px 12px 8px 24px;
   background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
-  border-bottom: 1px solid var(--border-1);
+  border: 1px solid var(--border-1);
+  border-radius: 12px;
   flex-shrink: 0;
 }
 
 .welcome-banner--collapsed {
-  align-items: center;
-  padding: 8px 16px;
+  background: var(--bg-1);
 }
 
-.welcome-collapsed-label {
+/* Always-visible header row — the toggle never moves. */
+.welcome-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.welcome-label {
   font-size: 12px;
   font-weight: 500;
   color: var(--text-2);
-  flex: 1;
 }
 
-.welcome-collapsed-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* Collapsible body: 1fr → 0fr animates height without measuring it. */
+.welcome-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.28s ease;
 }
-
-.welcome-show-btn {
-  padding: 5px 12px;
-  background: transparent;
-  border: 1px solid var(--border-2);
-  border-radius: 5px;
-  color: var(--text-1);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.welcome-show-btn:hover {
-  color: var(--text-0);
-  border-color: var(--text-3);
-}
-
-.welcome-dismiss--sm {
-  padding: 5px 8px;
-  font-size: 12px;
-}
-
-.welcome-banner-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.header-guide-btn {
-  padding: 5px 12px;
-  background: transparent;
-  border: 1px solid var(--border-2);
-  border-radius: 5px;
-  color: var(--text-2);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.header-guide-btn:hover {
-  color: var(--text-0);
-  border-color: var(--text-3);
+.welcome-banner--collapsed .welcome-body {
+  grid-template-rows: 0fr;
 }
 
 .welcome-content {
-  flex: 1;
+  overflow: hidden;
+  min-height: 0;
   min-width: 0;
 }
 
@@ -498,7 +602,7 @@ button { font-family: inherit; }
   font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.02em;
-  margin-bottom: 8px;
+  margin: 6px 0 8px;
 }
 
 .welcome-lead {
@@ -542,6 +646,7 @@ button { font-family: inherit; }
 
 .welcome-dismiss {
   flex-shrink: 0;
+  min-width: 104px;
   padding: 8px 14px;
   border: 1px solid var(--border-2);
   border-radius: 6px;
@@ -549,6 +654,7 @@ button { font-family: inherit; }
   color: var(--text-1);
   font-size: 12px;
   font-weight: 500;
+  text-align: center;
   cursor: pointer;
 }
 .welcome-dismiss:hover {
@@ -560,28 +666,22 @@ button { font-family: inherit; }
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 14px;
+  margin: 14px 0 12px;
 }
 
+/* Two equal-weight destinations — plain, identical buttons. */
 .welcome-action-btn {
   padding: 8px 16px;
-  border: none;
+  border: 1px solid var(--border-2);
   border-radius: 6px;
-  background: var(--text-0);
-  color: var(--bg-0);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.welcome-action-btn:hover {
-  opacity: 0.92;
-}
-.welcome-action-btn.secondary {
   background: var(--bg-2);
   color: var(--text-0);
-  border: 1px solid var(--border-2);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
 }
-.welcome-action-btn.secondary:hover {
+.welcome-action-btn:hover {
   border-color: var(--text-3);
 }
 
@@ -589,23 +689,22 @@ button { font-family: inherit; }
 .inspector-nav {
   flex-shrink: 0;
   border-bottom: 1px solid var(--border-1);
-  background: var(--bg-1);
 }
 
 .inspector-modes {
   display: flex;
   width: 100%;
-  padding: 8px 10px 0;
-  gap: 4px;
+  padding: 10px 12px;
+  gap: 6px;
   border-bottom: 1px solid var(--border-1);
 }
 
 .inspector-mode-btn {
   flex: 1;
   min-width: 0;
-  padding: 10px 12px;
+  padding: 9px 12px;
   border: none;
-  border-radius: 6px 6px 0 0;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-2);
   font-size: 12px;
@@ -618,9 +717,8 @@ button { font-family: inherit; }
   background: var(--bg-2);
 }
 .inspector-mode-btn.active {
-  color: var(--text-0);
-  background: var(--bg-0);
-  box-shadow: inset 0 -1px 0 var(--bg-0);
+  color: var(--accent-soft);
+  background: var(--accent-bg);
 }
 
 .inspector-subtabs {
@@ -628,16 +726,15 @@ button { font-family: inherit; }
   flex-wrap: nowrap;
   overflow-x: auto;
   gap: 2px;
-  padding: 6px 10px;
-  background: var(--bg-0);
+  padding: 8px 12px;
 }
 .inspector-subtabs::-webkit-scrollbar { height: 4px; }
 
 .inspector-subtab {
   flex-shrink: 0;
-  padding: 8px 14px;
+  padding: 7px 14px;
   border: none;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-2);
   font-size: 12px;
@@ -656,7 +753,6 @@ button { font-family: inherit; }
   font-size: 12px;
   color: var(--text-3);
   line-height: 1.45;
-  background: var(--bg-0);
 }
 
 /* ── Tab bar ─────────────────────────────────────────────────────────────── */
@@ -700,6 +796,7 @@ button { font-family: inherit; }
   flex-direction: column;
   position: relative;
 }
+.panel-body > * { animation: panel-in 0.18s ease; }
 
 .scroll-area {
   flex: 1;
@@ -759,7 +856,7 @@ button { font-family: inherit; }
   border-bottom: 1px solid var(--border-1);
   position: sticky;
   top: 0;
-  background: var(--bg-0);
+  background: var(--bg-1);
   z-index: 1;
 }
 
@@ -771,7 +868,7 @@ button { font-family: inherit; }
 
 .token-table tr:hover td { background: var(--bg-2); }
 
-.tok-type { color: var(--cat-expr); }
+.tok-type { width: 160px; }
 .tok-lex  { color: var(--text-0); }
 .num      {
   color: var(--text-2);
@@ -779,6 +876,13 @@ button { font-family: inherit; }
   text-align: right;
   width: 60px;
 }
+
+/* Token categories */
+.tok-kw    { color: var(--cat-stmt); }
+.tok-lit   { color: #fbbf24; }
+.tok-ident { color: var(--cat-expr); }
+.tok-punct { color: var(--text-2); }
+.tok-meta  { color: var(--text-3); }
 
 /* ── AST pane ────────────────────────────────────────────────────────────── */
 .ast-pane {
@@ -810,9 +914,9 @@ button { font-family: inherit; }
 }
 .subtab-btn:hover { color: var(--text-0); border-color: var(--text-3); }
 .subtab-btn.active {
-  background: var(--text-0);
-  color: var(--bg-0);
-  border-color: var(--text-0);
+  background: var(--accent-bg);
+  color: var(--accent-soft);
+  border-color: var(--accent-border);
 }
 
 .ast-json {
@@ -827,10 +931,11 @@ button { font-family: inherit; }
   flex: 1;
   position: relative;
   overflow: hidden;
-  background-color: var(--bg-0);
-  background-image: radial-gradient(circle, var(--border-1) 1px, transparent 1px);
+  background-color: var(--bg-1);
+  background-image: radial-gradient(circle, var(--border-2) 1px, transparent 1px);
   background-size: 24px 24px;
   background-position: 0 0;
+  border-radius: 0 0 12px 12px;
 }
 
 .ast-graph-svg {
@@ -903,13 +1008,13 @@ button { font-family: inherit; }
 }
 
 .ast-edge-label-bg {
-  fill: var(--bg-0);
+  fill: var(--bg-1);
   stroke: var(--border-1);
   stroke-width: 1;
 }
 
 .ast-node-rect {
-  fill: var(--bg-1);
+  fill: var(--bg-2);
   stroke: var(--border-2);
   stroke-width: 1;
   transition: stroke 0.15s, fill 0.15s;
@@ -1064,14 +1169,14 @@ button { font-family: inherit; }
   opacity: 0.45;
 }
 .timeline-step.active {
-  background: var(--text-0);
-  color: var(--bg-0);
-  border-color: var(--text-0);
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
   opacity: 1;
 }
 .timeline-step.active .timeline-count {
-  background: var(--bg-0);
-  color: var(--text-0);
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
 }
 
 .timeline-dot {
@@ -1089,7 +1194,7 @@ button { font-family: inherit; }
   background: var(--border-2);
 }
 .timeline-step.active .timeline-dot {
-  background: var(--bg-0);
+  background: #fff;
 }
 
 .timeline-name {
@@ -1140,7 +1245,6 @@ button { font-family: inherit; }
   justify-content: space-between;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border-1);
-  background: var(--bg-0);
   font-size: 12px;
   flex-shrink: 0;
 }
@@ -1223,9 +1327,11 @@ button { font-family: inherit; }
 }
 
 .action-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border-1);
-  background: var(--bg-1);
   flex-shrink: 0;
 }
 
@@ -1234,15 +1340,15 @@ button { font-family: inherit; }
   background: var(--text-0);
   color: var(--bg-0);
   border: 1px solid var(--text-0);
-  border-radius: 5px;
+  border-radius: 6px;
   font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.15s;
 }
 .action-btn:hover:not(:disabled) {
-  background: var(--text-1);
-  border-color: var(--text-1);
+  background: #d4d4d8;
+  border-color: #d4d4d8;
 }
 .action-btn:disabled {
   background: transparent;
@@ -1277,18 +1383,45 @@ button { font-family: inherit; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+.terminal {
+  margin: 14px 16px;
+  background: var(--bg-0);
+  border: 1px solid var(--border-1);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.terminal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-1);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.terminal-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
 .output-box {
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--text-0);
   white-space: pre-wrap;
   line-height: 1.6;
-  padding: 16px;
+  padding: 14px 16px;
+  margin: 0;
 }
 
 /* ── Benchmark pane ──────────────────────────────────────────────────────── */
-.action-bar { display: flex; align-items: center; gap: 14px; }
-
 .bench-meta {
   font-family: var(--font-mono);
   font-size: 11.5px;
@@ -1311,12 +1444,8 @@ button { font-family: inherit; }
   letter-spacing: 0.06em;
   text-transform: uppercase;
   border-bottom: 1px solid var(--border-1);
-  position: sticky;
-  top: 0;
-  background: var(--bg-0);
-  z-index: 1;
 }
-.bench-table th.num { width: 90px; }
+.bench-table th.num { width: 110px; }
 
 .bench-table td {
   padding: 11px 16px;
@@ -1324,6 +1453,8 @@ button { font-family: inherit; }
   color: var(--text-1);
   vertical-align: middle;
 }
+.bench-table td.num { white-space: nowrap; }
+.bench-table tr:last-child td { border-bottom: none; }
 
 .bench-table tr:hover td { background: var(--bg-2); }
 
@@ -1331,6 +1462,7 @@ button { font-family: inherit; }
   color: var(--text-0);
   font-weight: 500;
 }
+.bench-name.flux { color: var(--accent-soft); font-weight: 600; }
 
 .bench-bar-cell { width: 240px; padding-right: 16px; }
 
@@ -1346,7 +1478,8 @@ button { font-family: inherit; }
   border-radius: 4px;
   transition: width 0.3s ease;
 }
-.bench-bar.best { background: #86efac; }
+.bench-bar.best { background: var(--success); }
+.bench-bar.flux { background: var(--accent-soft); }
 
 .bench-output code {
   font-family: var(--font-mono);
@@ -1363,13 +1496,12 @@ button { font-family: inherit; }
 .bench-err { color: #f87171; font-style: italic; font-size: 11.5px; }
 
 .bench-footnote {
-  padding: 12px 16px 16px;
+  padding: 2px 4px 16px;
   margin: 0;
   font-size: 11.5px;
   color: var(--text-3);
   line-height: 1.55;
   font-family: var(--font-ui);
-  border-top: 1px solid var(--border-1);
 }
 .bench-footnote code {
   padding: 0 4px;
@@ -1381,9 +1513,12 @@ button { font-family: inherit; }
 }
 
 .kernel-block {
-  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-1);
+  border: 1px solid var(--border-1);
+  border-radius: 12px;
+  margin-bottom: 14px;
+  overflow: hidden;
 }
-.kernel-block:last-of-type { border-bottom: none; }
 
 .kernel-header {
   padding: 14px 16px 8px;
@@ -1457,11 +1592,13 @@ button { font-family: inherit; }
   /* Header */
   .header { padding: 0 12px; gap: 10px; }
   .brand-sub,
-  .header-pages { display: none; }
+  .header-pages,
+  .header-gh-label { display: none; }
+  .header-gh { margin-right: 0; padding: 5px 7px; }
   .mobile-menu-btn { display: flex; }
 
   /* Workspace: single-panel mode */
-  .workspace { position: relative; }
+  .workspace { position: relative; padding: 8px; gap: 8px; flex-direction: column; }
   .resize-handle { display: none; }
 
   .center-pane,
@@ -1481,6 +1618,7 @@ button { font-family: inherit; }
     inset: 0;
     z-index: 199;
     background: rgba(0, 0, 0, 0.55);
+    animation: backdrop-in 0.2s ease;
   }
 
   /* Sidebar as slide-in drawer */
@@ -1493,7 +1631,9 @@ button { font-family: inherit; }
     z-index: 200;
     width: 280px;
     max-width: 85vw;
+    border-radius: 0 12px 12px 0;
     box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4);
+    animation: drawer-in 0.25s ease;
   }
 
   /* Mobile bottom nav */
@@ -1501,7 +1641,8 @@ button { font-family: inherit; }
     display: flex;
     flex-shrink: 0;
     background: var(--bg-1);
-    border-top: 1px solid var(--border-1);
+    border: 1px solid var(--border-1);
+    border-radius: 12px;
   }
 
   .mobile-nav-btn {
@@ -1530,8 +1671,8 @@ button { font-family: inherit; }
 
   /* Compact welcome on mobile */
   .welcome-banner {
-    padding: 10px 14px;
-    flex-wrap: wrap;
+    margin: 8px 8px 0;
+    padding: 6px 8px 6px 16px;
   }
   .welcome-steps {
     grid-template-columns: 1fr;
@@ -1556,9 +1697,3 @@ button { font-family: inherit; }
   line-height: 1.45;
 }
 
-.kernel-block .bench-table thead {
-  display: none;
-}
-.kernel-block:first-of-type .bench-table thead {
-  display: table-header-group;
-}

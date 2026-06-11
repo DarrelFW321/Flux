@@ -44,6 +44,15 @@ interface FrontendResult {
 }
 
 type Tab = 'tokens' | 'ast' | 'mir' | 'ir' | 'output';
+
+// Category class for color-coding rows in the token table.
+function tokenClass(type: string): string {
+  if (type.startsWith('KW_'))                      return 'tok-kw';
+  if (type === 'INT_LIT' || type === 'FLOAT_LIT')  return 'tok-lit';
+  if (type === 'IDENTIFIER')                       return 'tok-ident';
+  if (type === 'EOF')                              return 'tok-meta';
+  return 'tok-punct';
+}
 type AppPage = 'playground' | 'benchmarks';
 type AstView = 'graph' | 'json';
 type MirView = 'optimized' | 'raw' | 'diff';
@@ -90,16 +99,16 @@ const beforeEditorMount = (monaco: Monaco) => {
       { token: 'type',       foreground: '93c5fd' },
     ],
     colors: {
-      'editor.background':              '#09090b',
+      'editor.background':              '#111114',
       'editor.foreground':              '#e4e4e7',
       'editorLineNumber.foreground':    '#3f3f46',
       'editorLineNumber.activeForeground': '#a1a1aa',
-      'editor.lineHighlightBackground': '#111114',
-      'editor.lineHighlightBorder':     '#11111400',
+      'editor.lineHighlightBackground': '#18181b',
+      'editor.lineHighlightBorder':     '#18181b00',
       'editor.selectionBackground':     '#27272a',
       'editor.inactiveSelectionBackground': '#1f1f23',
       'editorCursor.foreground':        '#fafafa',
-      'editorGutter.background':        '#09090b',
+      'editorGutter.background':        '#111114',
       'editorIndentGuide.background1':  '#18181b',
       'editorIndentGuide.activeBackground1': '#27272a',
       'scrollbarSlider.background':         '#27272a80',
@@ -160,14 +169,17 @@ export default function App() {
 
   const startResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    const sidebarW = sidebarCollapsed ? 32 : 240;
+    const ws   = workspaceRef.current;
+    const pane = ws?.querySelector<HTMLElement>('.center-pane');
+    if (!ws || !pane) return;
+    // The pane's left edge stays fixed during the drag; only its width changes.
+    const paneLeft = pane.getBoundingClientRect().left;
+    const wsRight  = ws.getBoundingClientRect().right;
+    // Reserve right padding (16) + handle gap (12) + min inspector width (200).
+    const maxWidth = wsRight - paneLeft - 16 - 12 - 200;
 
     const onMove = (ev: MouseEvent) => {
-      if (!workspaceRef.current) return;
-      const rect = workspaceRef.current.getBoundingClientRect();
-      const available = rect.width - sidebarW - 4;
-      const offset    = ev.clientX - rect.left - sidebarW;
-      setSplitPx(Math.max(200, Math.min(available - 200, offset)));
+      setSplitPx(Math.max(200, Math.min(maxWidth, ev.clientX - paneLeft)));
     };
 
     const onUp = () => {
@@ -181,7 +193,7 @@ export default function App() {
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup',   onUp);
-  }, [sidebarCollapsed]);
+  }, []);
 
   const runFrontend = useCallback((src: string) => {
     if (!fluxRef.current) return;
@@ -305,6 +317,18 @@ export default function App() {
           </button>
         </nav>
         <div className="header-meta">
+          <a
+            className="header-gh"
+            href="https://github.com/DarrelFW321/flux"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="GitHub repository"
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden>
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
+            </svg>
+            <span className="header-gh-label">GitHub</span>
+          </a>
           <span className={`status-dot ${wasmReady ? 'ok' : 'warn'}`} aria-hidden />
           <span>{wasmReady ? 'wasm ready' : 'wasm loading'}</span>
         </div>
@@ -421,7 +445,7 @@ export default function App() {
                         <tbody>
                           {result.tokens.map((tok, i) => (
                             <tr key={i}>
-                              <td className="tok-type">{tok.type}</td>
+                              <td className={`tok-type ${tokenClass(tok.type)}`}>{tok.type}</td>
                               <td className="tok-lex">{tok.lexeme || <span className="dim">·</span>}</td>
                               <td className="num">{tok.line}</td>
                               <td className="num">{tok.col}</td>
@@ -548,7 +572,13 @@ export default function App() {
 
                 {output && (
                   <div className="scroll-area">
-                    <pre className="output-box">{output}</pre>
+                    <div className="terminal">
+                      <div className="terminal-head">
+                        <span className="terminal-dot" aria-hidden />
+                        stdout
+                      </div>
+                      <pre className="output-box">{output}</pre>
+                    </div>
                   </div>
                 )}
 
