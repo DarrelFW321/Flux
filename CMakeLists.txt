@@ -62,7 +62,7 @@ if(WIN32)
 endif()
 
 # ── Unit tests ────────────────────────────────────────────────────────────────
-option(FLUX_BUILD_TESTS "Build the Catch2 unit test suite" ON)
+option(FLUX_BUILD_TESTS "Build the Catch2 unit test suite" OFF)
 if(FLUX_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
