@@ -10,7 +10,6 @@ import { DocsPane } from './components/DocsPane';
 import { InspectorNav } from './components/InspectorNav';
 import { BenchmarksPage, type BenchmarkReport } from './components/BenchmarksPage';
 import { WelcomeBanner } from './components/WelcomeBanner';
-import { Footer } from './components/Footer';
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, type FluxExample } from './data/examples';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -590,8 +589,6 @@ export default function App() {
         </nav>
       </main>
       )}
-
-      <Footer />
     </div>
   );
 }

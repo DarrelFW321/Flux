@@ -46,57 +46,6 @@ button { font-family: inherit; }
 /* ── App shell ───────────────────────────────────────────────────────────── */
 .app { height: 100vh; display: flex; flex-direction: column; background: var(--bg-0); }
 
-/* ── Site footer ───────────────────────────────────────────────────────────── */
-.site-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-shrink: 0;
-  padding: 0 20px;
-  height: 36px;
-  background: var(--bg-1);
-  border-top: 1px solid var(--border-1);
-  font-size: 11.5px;
-  color: var(--text-2);
-}
-
-.site-footer-credit {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.site-footer-name {
-  color: var(--text-1);
-  font-weight: 500;
-}
-
-.site-footer-sep {
-  color: var(--text-3);
-}
-
-.site-footer-role {
-  color: var(--text-3);
-}
-
-.site-footer-links {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-shrink: 0;
-}
-
-.site-footer-link {
-  color: var(--text-2);
-  text-decoration: none;
-  font-weight: 500;
-}
-.site-footer-link:hover {
-  color: var(--text-0);
-}
-
 /* ── Header ──────────────────────────────────────────────────────────────── */
 .header {
   display: flex;
