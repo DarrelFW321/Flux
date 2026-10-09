@@ -1,17 +1,36 @@
-name: Build WASM + Deploy Visualizer
+name: Test, build WASM, deploy playground
 
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write   # needed for peaceiris/actions-gh-pages
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
+      - name: Install toolchain and SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build spirv-tools
+
+      - name: Build compiler and tests
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFLUX_BUILD_TESTS=ON
+          cmake --build build --parallel
+
+      # Catch2 unit tests + spirv-val on every example at -O0 and -O2.
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -35,12 +54,10 @@ jobs:
 
       - name: Install dependencies
         working-directory: frontend
-        run: npm install
+        run: npm ci
 
       - name: Build
         working-directory: frontend
-        env:
-          VITE_BACKEND_URL: ${{ vars.VITE_BACKEND_URL }}
         run: npm run build
 
       # ── Deploy to GitHub Pages ──────────────────────────────────────────────

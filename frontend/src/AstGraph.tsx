@@ -1,412 +1,163 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-
-// ── Graph node model ─────────────────────────────────────────────────────────
-
-type Category = 'decl' | 'stmt' | 'expr' | 'meta';
-
-interface GraphNode {
-  id: string;
-  label: string;
-  detail?: string;
-  category: Category;
-  children: { edgeLabel?: string; node: GraphNode }[];
-}
-
-interface Positioned {
-  id: string;
-  label: string;
-  detail?: string;
-  category: Category;
-  x: number;
-  y: number;
-  width: number;
-  children: { edgeLabel?: string; node: Positioned }[];
-}
-
-// ── AST JSON → graph ─────────────────────────────────────────────────────────
-
-let _id = 0;
-const mk = (
-  label: string,
-  category: Category,
-  detail?: string,
-  children: GraphNode['children'] = [],
-): GraphNode => ({ id: `n${_id++}`, label, detail, category, children });
-
-function exprNode(e: any): GraphNode {
-  if (!e || typeof e !== 'object') return mk('?', 'expr');
-  switch (e.kind) {
-    case 'IntLit':   return mk('IntLit',   'expr', String(e.value));
-    case 'FloatLit': return mk('FloatLit', 'expr', String(e.value));
-    case 'BoolLit':  return mk('BoolLit',  'expr', String(e.value));
-    case 'Ident':    return mk('Ident',    'expr', e.name);
-    case 'Unary':
-      return mk('Unary', 'expr', e.op, [
-        { edgeLabel: 'operand', node: exprNode(e.operand) },
-      ]);
-    case 'Binary':
-      return mk('Binary', 'expr', e.op, [
-        { edgeLabel: 'left',  node: exprNode(e.left)  },
-        { edgeLabel: 'right', node: exprNode(e.right) },
-      ]);
-    case 'Call':
-      return mk('Call', 'expr', e.callee + '()',
-        (e.args ?? []).map((a: any, i: number) => ({
-          edgeLabel: `arg ${i}`,
-          node: exprNode(a),
-        })));
-    case 'ArrayLit': {
-      const elts = e.elements ?? [];
-      return mk('ArrayLit', 'expr', `[${elts.length}]`,
-        elts.map((el: any, i: number) => ({
-          edgeLabel: `${i}`,
-          node: exprNode(el),
-        })));
-    }
-    case 'Index':
-      return mk('Index', 'expr', undefined, [
-        { edgeLabel: 'array', node: exprNode(e.array) },
-        { edgeLabel: 'index', node: exprNode(e.index) },
-      ]);
-  }
-  return mk(e.kind ?? '?', 'expr');
-}
-
-function stmtNode(s: any): GraphNode {
-  if (!s || typeof s !== 'object') return mk('?', 'stmt');
-  switch (s.kind) {
-    case 'Let':
-      return mk('Let', 'stmt', `${s.name}: ${s.type}`, [
-        { edgeLabel: 'init', node: exprNode(s.init) },
-      ]);
-    case 'Assign':
-      return mk('Assign', 'stmt', s.name, [
-        { edgeLabel: 'value', node: exprNode(s.value) },
-      ]);
-    case 'Return':
-      return mk('Return', 'stmt', undefined, [
-        { edgeLabel: 'value', node: exprNode(s.value) },
-      ]);
-    case 'Print':
-      return mk('Print', 'stmt', undefined, [
-        { edgeLabel: 'value', node: exprNode(s.value) },
-      ]);
-    case 'If': {
-      const c: GraphNode['children'] = [
-        { edgeLabel: 'cond', node: exprNode(s.cond) },
-        { edgeLabel: 'then', node: blockNode(s.then) },
-      ];
-      if (s.else) c.push({ edgeLabel: 'else', node: blockNode(s.else) });
-      return mk('If', 'stmt', undefined, c);
-    }
-    case 'While':
-      return mk('While', 'stmt', undefined, [
-        { edgeLabel: 'cond', node: exprNode(s.cond) },
-        { edgeLabel: 'body', node: blockNode(s.body) },
-      ]);
-    case 'ExprStmt':
-      return mk('ExprStmt', 'stmt', undefined, [
-        { node: exprNode(s.expr) },
-      ]);
-    case 'IndexAssign':
-      return mk('IndexAssign', 'stmt', undefined, [
-        { edgeLabel: 'array', node: exprNode(s.array) },
-        { edgeLabel: 'index', node: exprNode(s.index) },
-        { edgeLabel: 'value', node: exprNode(s.value) },
-      ]);
-  }
-  return mk(s.kind ?? '?', 'stmt');
-}
-
-function blockNode(stmts: any): GraphNode {
-  const list = Array.isArray(stmts) ? stmts : [];
-  const detail = `${list.length} stmt${list.length === 1 ? '' : 's'}`;
-  return mk('Block', 'meta', detail,
-    list.map((s) => ({ node: stmtNode(s) })));
-}
-
-function topLevelNode(t: any): GraphNode {
-  if (t?.kind === 'FnDecl') {
-    const params = (t.params ?? [])
-      .map((p: any) => `${p.name}: ${p.type}`)
-      .join(', ');
-    return mk('FnDecl', 'decl', `${t.name}(${params})`, [
-      { edgeLabel: `→ ${t.return_type}`, node: blockNode(t.body) },
-    ]);
-  }
-  return stmtNode(t);
-}
-
-function buildGraph(ast: any): GraphNode {
-  _id = 0;
-  if (!ast || typeof ast !== 'object') return mk('Program', 'decl');
-  const items = ast.items ?? [];
-  return mk('Program', 'decl', `${items.length} item${items.length === 1 ? '' : 's'}`,
-    items.map((it: any) => ({ node: topLevelNode(it) })));
-}
+import type { AstNode } from './lib/compiler';
 
 // ── Tidy-tree layout ─────────────────────────────────────────────────────────
 
-const NODE_W = 156;
-const NODE_H = 56;
-const X_GAP  = 22;
-const Y_GAP  = 56;
-
-function subtreeWidth(n: GraphNode): number {
-  if (n.children.length === 0) return NODE_W;
-  const w = n.children.reduce(
-    (sum, c, i) => sum + subtreeWidth(c.node) + (i > 0 ? X_GAP : 0),
-    0,
-  );
-  return Math.max(NODE_W, w);
+interface Positioned {
+  id: string;
+  node: AstNode;
+  x: number;
+  y: number;
+  children: { edge: string; p: Positioned }[];
 }
 
-function layout(n: GraphNode, depth: number, xStart: number): Positioned {
-  const tw = subtreeWidth(n);
-  if (n.children.length === 0) {
-    return {
-      ...n,
-      x: xStart + tw / 2,
-      y: depth * (NODE_H + Y_GAP),
-      width: tw,
-      children: [],
-    };
-  }
-  const childrenW = n.children.reduce(
-    (sum, c, i) => sum + subtreeWidth(c.node) + (i > 0 ? X_GAP : 0),
-    0,
-  );
-  let cx = xStart + (tw - childrenW) / 2;
-  const positioned: Positioned['children'] = [];
-  for (const c of n.children) {
-    const cw = subtreeWidth(c.node);
-    positioned.push({
-      edgeLabel: c.edgeLabel,
-      node: layout(c.node, depth + 1, cx),
-    });
-    cx += cw + X_GAP;
-  }
-  return {
-    ...n,
-    x: xStart + tw / 2,
-    y: depth * (NODE_H + Y_GAP),
-    width: tw,
-    children: positioned,
-  };
+const NODE_W = 150;
+const NODE_H = 52;
+const X_GAP = 18;
+const Y_GAP = 52;
+
+function width(n: AstNode, memo: Map<AstNode, number>): number {
+  const m = memo.get(n);
+  if (m !== undefined) return m;
+  const w = n.children.length === 0
+    ? NODE_W
+    : Math.max(NODE_W, n.children.reduce((s, c, i) => s + width(c.node, memo) + (i ? X_GAP : 0), 0));
+  memo.set(n, w);
+  return w;
 }
 
-function maxDepth(n: GraphNode): number {
-  if (n.children.length === 0) return 1;
-  return 1 + Math.max(...n.children.map((c) => maxDepth(c.node)));
+let seq = 0;
+function layout(n: AstNode, depth: number, x0: number, memo: Map<AstNode, number>): Positioned {
+  const tw = width(n, memo);
+  const kidsW = n.children.reduce((s, c, i) => s + width(c.node, memo) + (i ? X_GAP : 0), 0);
+  let cx = x0 + (tw - kidsW) / 2;
+  const children = n.children.map(c => {
+    const p = layout(c.node, depth + 1, cx, memo);
+    cx += width(c.node, memo) + X_GAP;
+    return { edge: c.edge, p };
+  });
+  return { id: `n${seq++}`, node: n, x: x0 + tw / 2, y: depth * (NODE_H + Y_GAP), children };
 }
 
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max - 1) + '…';
+function depthOf(n: AstNode): number {
+  return 1 + (n.children.length ? Math.max(...n.children.map(c => depthOf(c.node))) : 0);
 }
+
+const clip = (s: string, n: number) => (s.length <= n ? s : s.slice(0, n - 1) + '…');
 
 // ── Component ────────────────────────────────────────────────────────────────
 
 interface AstGraphProps {
-  ast: any;
+  ast: AstNode;
+  linkedSrc: number | null;
+  onHoverSrc: (line: number | null) => void;
+  onPickSrc: (line: number) => void;
 }
 
-export function AstGraph({ ast }: AstGraphProps) {
-  const { root, width, height } = useMemo(() => {
-    const g = buildGraph(ast);
-    const r = layout(g, 0, 0);
-    const tw = subtreeWidth(g);
-    const td = maxDepth(g);
-    return {
-      root: r,
-      width: tw,
-      height: td * (NODE_H + Y_GAP) - Y_GAP,
-    };
+export function AstGraph({ ast, linkedSrc, onHoverSrc, onPickSrc }: AstGraphProps) {
+  const { root, w, h } = useMemo(() => {
+    seq = 0;
+    const memo = new Map<AstNode, number>();
+    return { root: layout(ast, 0, 0, memo), w: width(ast, memo), h: depthOf(ast) * (NODE_H + Y_GAP) - Y_GAP };
   }, [ast]);
 
   const PAD = 40;
-  const initialVb = useMemo(
-    () => ({ x: -PAD, y: -PAD, w: width + 2 * PAD, h: height + 2 * PAD }),
-    [width, height],
-  );
-
-  const [vb, setVb] = useState(initialVb);
+  const fit = useMemo(() => ({ x: -PAD, y: -PAD, w: w + 2 * PAD, h: h + 2 * PAD }), [w, h]);
+  // Open at a readable zoom centred on the root rather than fitting a huge tree.
+  const start = useMemo(() => {
+    const vw = Math.min(w + 2 * PAD, 1300);
+    return { x: root.x - vw / 2, y: -PAD, w: vw, h: Math.min(h + 2 * PAD, vw * 0.6) };
+  }, [root, w, h]);
+  const [vb, setVb] = useState(start);
   const [dragging, setDragging] = useState(false);
-
-  useEffect(() => setVb(initialVb), [initialVb]);
-
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef({ active: false, sx: 0, sy: 0, vbX: 0, vbY: 0 });
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const drag = useRef({ on: false, sx: 0, sy: 0, x: 0, y: 0 });
 
-  // Wheel zoom (cursor-centered). Use a non-passive listener so we can preventDefault.
+  // Only refit when the tree's shape changes, so editing doesn't reset the view.
+  const shapeKey = `${w}x${h}`;
+  useEffect(() => setVb(start), [shapeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
-    const el = containerRef.current;
+    const el = boxRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const svg = svgRef.current;
       if (!svg) return;
-      const rect = svg.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const py = e.clientY - rect.top;
-      setVb((curr) => {
-        const ux = curr.x + (px / rect.width) * curr.w;
-        const uy = curr.y + (py / rect.height) * curr.h;
-        const zoom = e.deltaY > 0 ? 1.12 : 1 / 1.12;
-        const minW = Math.max(width * 0.15, 200);
-        const maxW = width * 10;
-        const nw = Math.min(Math.max(curr.w * zoom, minW), maxW);
-        const ratio = nw / curr.w;
-        const nh = curr.h * ratio;
-        return {
-          x: ux - (ux - curr.x) * ratio,
-          y: uy - (uy - curr.y) * ratio,
-          w: nw,
-          h: nh,
-        };
+      const r = svg.getBoundingClientRect();
+      setVb(c => {
+        const ux = c.x + ((e.clientX - r.left) / r.width) * c.w;
+        const uy = c.y + ((e.clientY - r.top) / r.height) * c.h;
+        const z = e.deltaY > 0 ? 1.12 : 1 / 1.12;
+        const nw = Math.min(Math.max(c.w * z, 160), Math.max(w * 4, 800));
+        const k = nw / c.w;
+        return { x: ux - (ux - c.x) * k, y: uy - (uy - c.y) * k, w: nw, h: c.h * k };
       });
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [width]);
+  }, [w]);
 
-  const onMouseDown = (e: React.MouseEvent) => {
-    dragRef.current = {
-      active: true,
-      sx: e.clientX,
-      sy: e.clientY,
-      vbX: vb.x,
-      vbY: vb.y,
-    };
-    setDragging(true);
-  };
-  const onMouseMove = (e: React.MouseEvent) => {
-    if (!dragRef.current.active || !svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const dx = ((e.clientX - dragRef.current.sx) * vb.w) / rect.width;
-    const dy = ((e.clientY - dragRef.current.sy) * vb.h) / rect.height;
-    setVb((curr) => ({
-      ...curr,
-      x: dragRef.current.vbX - dx,
-      y: dragRef.current.vbY - dy,
-    }));
-  };
-  const endDrag = () => {
-    dragRef.current.active = false;
-    setDragging(false);
-  };
-
-  const reset = () => setVb(initialVb);
-  const zoom = (factor: number) =>
-    setVb((curr) => {
-      const nw = curr.w * factor;
-      const nh = curr.h * factor;
-      return {
-        x: curr.x + (curr.w - nw) / 2,
-        y: curr.y + (curr.h - nh) / 2,
-        w: nw,
-        h: nh,
-      };
-    });
-
-  // Walk tree and emit SVG elements.
   const nodes: JSX.Element[] = [];
   const edges: JSX.Element[] = [];
-
-  const walk = (n: Positioned) => {
-    for (const c of n.children) {
-      const x1 = n.x;
-      const y1 = n.y + NODE_H;
-      const x2 = c.node.x;
-      const y2 = c.node.y;
-      const midY = (y1 + y2) / 2;
-      edges.push(
-        <path
-          key={`e-${n.id}-${c.node.id}`}
-          d={`M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`}
-          className="ast-edge"
-        />,
-      );
-      if (c.edgeLabel) {
-        const w = c.edgeLabel.length * 6.2 + 12;
+  const walk = (p: Positioned) => {
+    for (const { edge, p: c } of p.children) {
+      const y1 = p.y + NODE_H, y2 = c.y, my = (y1 + y2) / 2;
+      edges.push(<path key={`e${c.id}`} className="ast-edge" d={`M${p.x},${y1} C${p.x},${my} ${c.x},${my} ${c.x},${y2}`} />);
+      if (edge && !/^\d+$/.test(edge)) {
+        const lw = edge.length * 6 + 10;
         edges.push(
-          <g
-            key={`l-${n.id}-${c.node.id}`}
-            transform={`translate(${(x1 + x2) / 2},${midY})`}
-          >
-            <rect
-              x={-w / 2}
-              y={-8}
-              width={w}
-              height={16}
-              rx={3}
-              className="ast-edge-label-bg"
-            />
-            <text className="ast-edge-label" textAnchor="middle" dy={3}>
-              {c.edgeLabel}
-            </text>
+          <g key={`l${c.id}`} transform={`translate(${(p.x + c.x) / 2},${my})`}>
+            <rect x={-lw / 2} y={-8} width={lw} height={16} rx={8} className="ast-edge-label-bg" />
+            <text className="ast-edge-label" textAnchor="middle" dy={3.5}>{edge}</text>
           </g>,
         );
       }
-      walk(c.node);
+      walk(c);
     }
+    const n = p.node;
+    const linked = linkedSrc !== null && n.line === linkedSrc;
     nodes.push(
-      <g
-        key={n.id}
-        transform={`translate(${n.x - NODE_W / 2},${n.y})`}
-        className={`ast-node ast-node-${n.category}`}
-      >
-        <rect
-          width={NODE_W}
-          height={NODE_H}
-          rx={6}
-          className="ast-node-rect"
-        />
-        <text
-          className="ast-node-kind"
-          x={NODE_W / 2}
-          y={n.detail ? 20 : NODE_H / 2 + 4}
-          textAnchor="middle"
-        >
-          {n.label}
-        </text>
-        {n.detail && (
-          <text
-            className="ast-node-detail"
-            x={NODE_W / 2}
-            y={40}
-            textAnchor="middle"
-          >
-            {truncate(n.detail, 22)}
-          </text>
-        )}
+      <g key={p.id} transform={`translate(${p.x - NODE_W / 2},${p.y})`}
+        className={`ast-node ast-${n.cat}${linked ? ' linked' : ''}`}
+        onMouseEnter={() => onHoverSrc(n.line)} onClick={() => onPickSrc(n.line)}>
+        <rect width={NODE_W} height={NODE_H} rx={8} className="ast-node-rect" />
+        <text className="ast-node-kind" x={10} y={19}>{n.label}</text>
+        {n.type && <text className="ast-node-type" x={NODE_W - 10} y={19} textAnchor="end">{clip(n.type, 8)}</text>}
+        {n.detail && <text className="ast-node-detail" x={10} y={39}>{clip(n.detail, 22)}</text>}
       </g>,
     );
   };
   walk(root);
 
+  const zoom = (f: number) => setVb(c => ({ x: c.x + (c.w - c.w * f) / 2, y: c.y + (c.h - c.h * f) / 2, w: c.w * f, h: c.h * f }));
+
   return (
-    <div ref={containerRef} className="ast-graph-container">
-      <div className="ast-graph-controls">
-        <button onClick={() => zoom(1 / 1.2)} title="Zoom in" aria-label="Zoom in">+</button>
-        <button onClick={() => zoom(1.2)} title="Zoom out" aria-label="Zoom out">−</button>
-        <button onClick={reset} title="Fit to view" aria-label="Fit to view">◇</button>
+    <div ref={boxRef} className="ast-graph" onMouseLeave={() => onHoverSrc(null)}>
+      <div className="ast-controls">
+        <button onClick={() => zoom(1 / 1.25)} aria-label="Zoom in">+</button>
+        <button onClick={() => zoom(1.25)} aria-label="Zoom out">−</button>
+        <button onClick={() => setVb(fit)} aria-label="Fit whole tree" title="Fit whole tree">⤢</button>
       </div>
       <svg
         ref={svgRef}
-        className={`ast-graph-svg${dragging ? ' dragging' : ''}`}
+        className={`ast-svg${dragging ? ' dragging' : ''}`}
         viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
-        preserveAspectRatio="xMidYMid meet"
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={endDrag}
-        onMouseLeave={endDrag}
+        onMouseDown={e => { drag.current = { on: true, sx: e.clientX, sy: e.clientY, x: vb.x, y: vb.y }; setDragging(true); }}
+        onMouseMove={e => {
+          if (!drag.current.on || !svgRef.current) return;
+          const r = svgRef.current.getBoundingClientRect();
+          const s = Math.max(vb.w / r.width, vb.h / r.height);
+          setVb(c => ({ ...c, x: drag.current.x - (e.clientX - drag.current.sx) * s, y: drag.current.y - (e.clientY - drag.current.sy) * s }));
+        }}
+        onMouseUp={() => { drag.current.on = false; setDragging(false); }}
+        onMouseLeave={() => { drag.current.on = false; setDragging(false); }}
       >
-        <g className="ast-edges">{edges}</g>
-        <g className="ast-nodes">{nodes}</g>
+        <g>{edges}</g>
+        <g>{nodes}</g>
       </svg>
-      <div className="ast-graph-hint">drag to pan · scroll to zoom</div>
+      <div className="ast-hint">drag to pan · scroll to zoom · click a node to jump to its line</div>
     </div>
   );
 }

@@ -1,332 +1,94 @@
-#include "frontend/lexer.hpp"
-#include "frontend/parser.hpp"
-#include "frontend/ast.hpp"
-#include "frontend/typechecker.hpp"
-#include "frontend/dumper.hpp"
-#include "midend/ir.hpp"
-#include "midend/lower_from_ast.hpp"
-#include "midend/passes.hpp"
-#include "backend/codegen.hpp"
-#include "backend/native.hpp"
-#include <llvm/IR/Verifier.h>
-#include <llvm/Support/raw_ostream.h>
+// fluxc — command-line driver for the Flux shader compiler.
+#include "driver.hpp"
+#include <cstring>
 #include <fstream>
 #include <iostream>
-#include <optional>
 #include <sstream>
-#include <string>
 
-// ── AST printer ──────────────────────────────────────────────────────────────
-
-static void print_expr(const Expr& e, int depth);
-static void print_stmt(const Stmt& s, int depth);
-static void print_block(const BlockStmt& b, int depth);
-
-static std::string indent_str(int depth) { return std::string(depth * 2, ' '); }
-
-static void print_expr(const Expr& e, int depth) {
-    std::string ind = indent_str(depth);
-    std::visit([&](const auto& v) {
-        using T = std::decay_t<decltype(v)>;
-        if constexpr (std::is_same_v<T, IntLitExpr>) {
-            std::cout << ind << "IntLit(" << v.value << ")\n";
-        } else if constexpr (std::is_same_v<T, FloatLitExpr>) {
-            std::cout << ind << "FloatLit(" << v.value << ")\n";
-        } else if constexpr (std::is_same_v<T, BoolLitExpr>) {
-            std::cout << ind << "BoolLit(" << (v.value ? "true" : "false") << ")\n";
-        } else if constexpr (std::is_same_v<T, IdentExpr>) {
-            std::cout << ind << "Ident(" << v.name << ")\n";
-        } else if constexpr (std::is_same_v<T, BinaryExpr>) {
-            std::cout << ind << "Binary(" << v.op << ")\n";
-            print_expr(*v.left,  depth + 1);
-            print_expr(*v.right, depth + 1);
-        } else if constexpr (std::is_same_v<T, UnaryExpr>) {
-            std::cout << ind << "Unary(" << v.op << ")\n";
-            print_expr(*v.operand, depth + 1);
-        } else if constexpr (std::is_same_v<T, CallExpr>) {
-            std::cout << ind << "Call(" << v.callee << ")\n";
-            for (const auto& a : v.args) print_expr(*a, depth + 1);
-        } else if constexpr (std::is_same_v<T, ArrayLitExpr>) {
-            std::cout << ind << "ArrayLit(" << v.elements.size() << ")\n";
-            for (const auto& el : v.elements) print_expr(*el, depth + 1);
-        } else if constexpr (std::is_same_v<T, IndexExpr>) {
-            std::cout << ind << "Index\n";
-            print_expr(*v.array, depth + 1);
-            print_expr(*v.index, depth + 1);
-        }
-    }, e.data);
-}
-
-static void print_block(const BlockStmt& b, int depth) {
-    for (const auto& s : b.stmts) print_stmt(*s, depth);
-}
-
-static void print_stmt(const Stmt& s, int depth) {
-    std::string ind = indent_str(depth);
-    std::visit([&](const auto& v) {
-        using T = std::decay_t<decltype(v)>;
-        if constexpr (std::is_same_v<T, LetStmt>) {
-            std::cout << ind << "Let " << v.name << " : " << v.type_name << "\n";
-            print_expr(*v.init, depth + 1);
-        } else if constexpr (std::is_same_v<T, AssignStmt>) {
-            std::cout << ind << "Assign " << v.name << "\n";
-            print_expr(*v.value, depth + 1);
-        } else if constexpr (std::is_same_v<T, ReturnStmt>) {
-            std::cout << ind << "Return\n";
-            print_expr(*v.value, depth + 1);
-        } else if constexpr (std::is_same_v<T, PrintStmt>) {
-            std::cout << ind << "Print\n";
-            print_expr(*v.value, depth + 1);
-        } else if constexpr (std::is_same_v<T, IfStmt>) {
-            std::cout << ind << "If\n";
-            std::cout << ind << "  [cond]\n";
-            print_expr(*v.condition, depth + 2);
-            std::cout << ind << "  [then]\n";
-            print_block(*v.then_block, depth + 2);
-            if (v.else_block) {
-                std::cout << ind << "  [else]\n";
-                print_block(**v.else_block, depth + 2);
-            }
-        } else if constexpr (std::is_same_v<T, WhileStmt>) {
-            std::cout << ind << "While\n";
-            std::cout << ind << "  [cond]\n";
-            print_expr(*v.condition, depth + 2);
-            std::cout << ind << "  [body]\n";
-            print_block(*v.body, depth + 2);
-        } else if constexpr (std::is_same_v<T, ExprStmt>) {
-            std::cout << ind << "ExprStmt\n";
-            print_expr(*v.expr, depth + 1);
-        } else if constexpr (std::is_same_v<T, IndexAssignStmt>) {
-            std::cout << ind << "IndexAssign\n";
-            print_expr(*v.array, depth + 1);
-            print_expr(*v.index, depth + 1);
-            print_expr(*v.value, depth + 1);
-        }
-    }, s.data);
-}
-
-static void print_program(const Program& prog) {
-    for (const auto& item : prog.items) {
-        std::visit([](const auto& v) {
-            using T = std::decay_t<decltype(v)>;
-            if constexpr (std::is_same_v<T, FnDecl>) {
-                std::cout << "FnDecl " << v.name << "(";
-                for (size_t i = 0; i < v.params.size(); ++i) {
-                    if (i) std::cout << ", ";
-                    std::cout << v.params[i].name << ": " << v.params[i].type_name;
-                }
-                std::cout << ") -> " << v.return_type << "\n";
-                print_block(*v.body, 1);
-            } else if constexpr (std::is_same_v<T, std::unique_ptr<Stmt>>) {
-                print_stmt(*v, 0);
-            }
-        }, item);
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-static std::string ir_to_string(llvm::Module& module) {
-    std::string buf;
-    llvm::raw_string_ostream ss(buf);
-    module.print(ss, nullptr);
-    return buf;
-}
-
-static std::string stem(const std::string& path) {
-    auto slash = path.find_last_of("/\\");
-    std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
-    auto dot = name.rfind('.');
-    return (dot == std::string::npos) ? name : name.substr(0, dot);
-}
-
-// ── Main ─────────────────────────────────────────────────────────────────────
-
-static void usage(const char* prog) {
-    std::cerr << "Usage: " << prog
-              << " [--tokens] [--ast] [--emit-mir] [--emit-llvm]"
-              << " [--compile [-o out]] [--dump-stages] <file>\n";
+static void usage() {
+    std::cerr <<
+        "usage: fluxc <file.flux> [options]\n"
+        "\n"
+        "  --emit <what>     wgsl (default) | spirv | spirv-asm | ir | ir-raw | ast | tokens | json\n"
+        "  -o <file>         write output to a file (spirv is binary)\n"
+        "  -O0               disable IR optimization\n"
+        "  --disable <pass>  skip one optimization pass (repeatable)\n"
+        "  --passes          list optimization passes\n"
+        "  --stats           print per-pass change counts to stderr\n";
 }
 
 int main(int argc, char** argv) {
-    bool        dump_tokens  = false;
-    bool        dump_ast     = false;
-    bool        emit_mir     = false;
-    bool        emit_llvm    = false;
-    bool        do_compile   = false;
-    bool        dump_stages  = false;
-    std::string source_path;
-    std::string out_path;
+    std::string input, output, emit = "wgsl";
+    CompileOptions opts;
+    opts.record_pass_steps = false;
+    bool stats = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if      (a == "--tokens")      dump_tokens = true;
-        else if (a == "--ast")         dump_ast    = true;
-        else if (a == "--emit-mir")    emit_mir    = true;
-        else if (a == "--emit-llvm")   emit_llvm   = true;
-        else if (a == "--compile")     do_compile  = true;
-        else if (a == "--dump-stages") dump_stages = true;
-        else if (a == "-o" && i + 1 < argc) out_path = argv[++i];
-        else                           source_path = a;
-    }
-
-    if (source_path.empty()) { usage(argv[0]); return 1; }
-    if (!dump_tokens && !dump_ast && !emit_mir && !emit_llvm && !do_compile && !dump_stages)
-        dump_ast = true;
-
-    if (do_compile || emit_llvm) init_native_target();
-
-    std::ifstream f(source_path);
-    if (!f) { std::cerr << "Cannot open: " << source_path << "\n"; return 1; }
-    std::string source(std::istreambuf_iterator<char>(f), {});
-
-    // ── --dump-stages: full JSON pipeline output ──────────────────────────────
-    if (dump_stages) {
-        std::string tokens_json, ast_json, mir_raw, mir_opt, ir_json, error_msg;
-        mir::PassReport report;
-
-        try {
-            Lexer lexer(source);
-            auto  tokens = lexer.tokenize();
-            tokens_json  = dump_tokens_json(tokens);
-
-            Parser  parser(std::move(tokens));
-            Program prog = parser.parse();
-            ast_json     = dump_ast_json(prog);
-
-            TypeChecker tc;
-            tc.check(prog);
-
-            mir::Module mir_mod = mir::lower_program(prog);
-            mir_raw = mir::print_module(mir_mod);
-
-            report = mir::default_pipeline().run(mir_mod);
-            mir_opt = mir::print_module(mir_mod);
-
-            CodeGen cg;
-            auto module = cg.generate(mir_mod);
-            ir_json     = ir_to_string(*module);
-        } catch (const std::exception& e) {
-            error_msg = e.what();
-        }
-
-        // Escape strings for inline JSON embedding.
-        auto js = [](const std::string& s) -> std::string {
-            if (s.empty()) return "null";
-            std::string out = "\"";
-            for (char c : s) {
-                if      (c == '"')  out += "\\\"";
-                else if (c == '\\') out += "\\\\";
-                else if (c == '\n') out += "\\n";
-                else if (c == '\r') out += "\\r";
-                else if (c == '\t') out += "\\t";
-                else                out += c;
-            }
-            return out + "\"";
+        auto next = [&]() -> std::string {
+            if (i + 1 >= argc) { usage(); std::exit(2); }
+            return argv[++i];
         };
+        if (a == "--emit") emit = next();
+        else if (a == "-o") output = next();
+        else if (a == "-O0") opts.optimize = false;
+        else if (a == "--disable") opts.disabled_passes.push_back(next());
+        else if (a == "--stats") stats = true;
+        else if (a == "--passes") {
+            for (const auto& p : ir::all_passes()) std::cout << p.name << "\t" << p.description << "\n";
+            return 0;
+        } else if (a == "-h" || a == "--help") { usage(); return 0; }
+        else if (!a.empty() && a[0] == '-') { std::cerr << "unknown option " << a << "\n"; usage(); return 2; }
+        else input = a;
+    }
+    if (input.empty()) { usage(); return 2; }
 
-        // Aggregated passes → JSON array of {name, changes}.
-        std::string passes_json = "[";
-        for (size_t i = 0; i < report.passes.size(); ++i) {
-            if (i) passes_json += ",";
-            passes_json += "{\"name\":" + js(report.passes[i].name)
-                         + ",\"changes\":" + std::to_string(report.passes[i].changes) + "}";
-        }
-        passes_json += "]";
+    std::ifstream in(input, std::ios::binary);
+    if (!in) { std::cerr << "fluxc: cannot open " << input << "\n"; return 1; }
+    std::stringstream ss;
+    ss << in.rdbuf();
 
-        // Timeline → JSON array of per-invocation snapshots.
-        std::string steps_json = "[";
-        for (size_t i = 0; i < report.steps.size(); ++i) {
-            if (i) steps_json += ",";
-            steps_json += "{\"name\":"      + js(report.steps[i].name)
-                       +  ",\"iteration\":" + std::to_string(report.steps[i].iteration)
-                       +  ",\"changes\":"   + std::to_string(report.steps[i].changes)
-                       +  ",\"mir_after\":" + js(report.steps[i].mir_after) + "}";
-        }
-        steps_json += "]";
+    auto slash = input.find_last_of("/\\");
+    opts.source_name = slash == std::string::npos ? input : input.substr(slash + 1);
+    CompileResult r = compile(ss.str(), opts);
 
-        std::cout << "{\n";
-        std::cout << "  \"tokens\":"        << (tokens_json.empty() ? "null" : tokens_json) << ",\n";
-        std::cout << "  \"ast\":"           << (ast_json.empty()    ? "null" : ast_json)    << ",\n";
-        std::cout << "  \"mir_raw\":"       << js(mir_raw) << ",\n";
-        std::cout << "  \"mir_optimized\":" << js(mir_opt) << ",\n";
-        std::cout << "  \"passes\":"        << passes_json << ",\n";
-        std::cout << "  \"pass_steps\":"    << steps_json << ",\n";
-        std::cout << "  \"ir\":"            << js(ir_json) << ",\n";
-        std::cout << "  \"error\":"         << js(error_msg) << "\n";
-        std::cout << "}\n";
-        return error_msg.empty() ? 0 : 1;
+    if (emit == "json") {
+        std::string j = result_to_json(r);
+        if (output.empty()) std::cout << j << "\n";
+        else std::ofstream(output) << j;
+        return r.ok ? 0 : 1;
     }
 
-    // ── Normal pipeline ───────────────────────────────────────────────────────
-    try {
-        Lexer lexer(source);
-        auto tokens = lexer.tokenize();
+    std::cerr << r.diags.format(input);
+    if (!r.ok && emit != "tokens" && emit != "ast") return 1;
 
-        if (dump_tokens) {
-            std::cout << "=== Tokens ===\n";
-            for (const auto& tok : tokens)
-                std::cout << "[" << tok.line << ":" << tok.col << "] "
-                          << token_type_name(tok.type)
-                          << " \"" << tok.lexeme << "\"\n";
-        }
-
-        Parser  parser(std::move(tokens));
-        Program prog = parser.parse();
-
-        TypeChecker tc;
-        tc.check(prog);
-
-        if (dump_ast) {
-            std::cout << "=== AST ===\n";
-            print_program(prog);
-        }
-
-        // Build MIR once if any later stage needs it; passes run on first
-        // access so --emit-mir always shows the optimized form.
-        std::optional<mir::Module> mir_mod;
-        auto get_mir = [&]() -> mir::Module& {
-            if (!mir_mod) {
-                mir_mod = mir::lower_program(prog);
-                mir::default_pipeline().run(*mir_mod);
-            }
-            return *mir_mod;
-        };
-
-        if (emit_mir) {
-            std::cout << mir::print_module(get_mir());
-        }
-
-        if (emit_llvm || do_compile) {
-            CodeGen cg;
-            auto module = cg.generate(get_mir());
-
-            std::string err;
-            llvm::raw_string_ostream es(err);
-            if (llvm::verifyModule(*module, &es)) {
-                std::cerr << "Internal error: IR verification failed:\n" << err << "\n";
-                return 1;
-            }
-
-            if (emit_llvm)  module->print(llvm::outs(), nullptr);
-
-            if (do_compile) {
-                if (out_path.empty())
-                    out_path = stem(source_path) +
-#ifdef _WIN32
-                               ".exe";
-#else
-                               "";
-#endif
-                compile_to_binary(*module, out_path);
-                std::cout << "Compiled: " << out_path << "\n";
-            }
-        }
-
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
+    if (stats) {
+        for (const auto& t : r.passes.totals) std::cerr << "  " << t.name << ": " << t.changes << "\n";
+        std::cerr << "  insts: " << r.passes.insts_before << " -> " << r.passes.insts_after
+                  << " in " << r.passes.iterations << " iteration(s)\n";
     }
 
+    if (emit == "spirv") {
+        if (output.empty()) { std::cerr << "fluxc: --emit spirv needs -o <file>\n"; return 2; }
+        std::ofstream out(output, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(r.spirv.words.data()),
+                  static_cast<std::streamsize>(r.spirv.words.size() * sizeof(uint32_t)));
+        return 0;
+    }
+
+    std::string text;
+    if (emit == "wgsl") text = r.wgsl.code;
+    else if (emit == "spirv-asm") text = r.spirv.disassembly;
+    else if (emit == "ir") text = r.ir_opt.text;
+    else if (emit == "ir-raw") text = r.ir_raw.text;
+    else if (emit == "ast") text = r.ast_json + "\n";
+    else if (emit == "tokens") {
+        for (const auto& t : r.tokens)
+            text += std::to_string(t.line) + ":" + std::to_string(t.col) + "\t" + token_type_name(t.type) +
+                    "\t" + t.lexeme + "\n";
+    } else { std::cerr << "fluxc: unknown --emit kind '" << emit << "'\n"; return 2; }
+
+    if (output.empty()) std::cout << text;
+    else std::ofstream(output) << text;
     return 0;
 }

@@ -1,5 +1,5 @@
 {
-  "name": "flux-visualizer",
+  "name": "flux-playground",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -12,15 +12,15 @@
     "@types/diff": "^7.0.2",
     "diff": "^9.0.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-json-tree": "^0.19.0",
-    "react-syntax-highlighter": "^15.6.1"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@types/react-syntax-highlighter": "^15.5.13",
     "@vitejs/plugin-react": "^4.3.1",
+    "@webgpu/types": "^0.1.51",
+    "monaco-editor": "^0.52.2",
+    "playwright-core": "^1.48.2",
     "typescript": "^5.5.3",
     "vite": "^5.4.2"
   }
