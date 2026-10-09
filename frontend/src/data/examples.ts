@@ -1,73 +1,26 @@
-import hello from '@examples/hello.fl?raw';
-import loops from '@examples/loops.fl?raw';
-import arrays from '@examples/arrays.fl?raw';
-import functions from '@examples/functions.fl?raw';
-import controlFlow from '@examples/control_flow.fl?raw';
-import optimizations from '@examples/optimizations.fl?raw';
-import neuron from '@examples/neuron.fl?raw';
+import gradient from '@examples/gradient.flux?raw';
+import plasma from '@examples/plasma.flux?raw';
+import raymarch from '@examples/raymarch.flux?raw';
+import mandelbrot from '@examples/mandelbrot.flux?raw';
+import noise from '@examples/noise.flux?raw';
+import optimizations from '@examples/optimizations.flux?raw';
+import triangle from '@examples/triangle.flux?raw';
 
 export interface FluxExample {
   id: string;
   title: string;
   description: string;
-  tags: string[];
   source: string;
 }
 
 export const EXAMPLES: FluxExample[] = [
-  {
-    id: 'hello',
-    title: 'Hello',
-    description: 'Scalars, functions, and print.',
-    tags: ['basics'],
-    source: hello,
-  },
-  {
-    id: 'loops',
-    title: 'Loops',
-    description: 'while loops and accumulation.',
-    tags: ['basics', 'control flow'],
-    source: loops,
-  },
-  {
-    id: 'arrays',
-    title: 'Arrays',
-    description: 'Literals, broadcast, dot, and sum.',
-    tags: ['arrays'],
-    source: arrays,
-  },
-  {
-    id: 'functions',
-    title: 'Functions',
-    description: 'Array parameters and returns.',
-    tags: ['functions', 'arrays'],
-    source: functions,
-  },
-  {
-    id: 'control_flow',
-    title: 'Control flow',
-    description: 'if / else and per-element logic.',
-    tags: ['control flow'],
-    source: controlFlow,
-  },
-  {
-    id: 'optimizations',
-    title: 'Optimizations',
-    description: 'Constants folded in MIR — try the diff tab.',
-    tags: ['mir', 'arrays'],
-    source: optimizations,
-  },
-  {
-    id: 'neuron',
-    title: 'Neuron',
-    description: 'dot + bias + ReLU — a tiny ML-style kernel.',
-    tags: ['ml', 'functions'],
-    source: neuron,
-  },
+  { id: 'gradient', title: 'Gradient', description: 'Hello world: uniforms, swizzles, broadcasting', source: gradient },
+  { id: 'plasma', title: 'Plasma', description: 'Helper functions, consts, @range / @color controls', source: plasma },
+  { id: 'raymarch', title: 'Raymarcher', description: 'SDFs, loops with break, inlining + LICM', source: raymarch },
+  { id: 'mandelbrot', title: 'Mandelbrot', description: 'Dynamic loop bounds and early exit', source: mandelbrot },
+  { id: 'noise', title: 'FBM noise', description: 'Constant-trip loop that the optimizer unrolls', source: noise },
+  { id: 'optimizations', title: 'Optimizer tour', description: 'One line per pass — step through the IR', source: optimizations },
+  { id: 'triangle', title: 'Two stages', description: '@vertex + @fragment, matrices', source: triangle },
 ];
 
-export const DEFAULT_EXAMPLE_ID = 'arrays';
-
-export function getExampleById(id: string): FluxExample | undefined {
-  return EXAMPLES.find(e => e.id === id);
-}
+export const DEFAULT_EXAMPLE_ID = 'raymarch';

@@ -4,61 +4,23 @@ project(flux CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ── LLVM dependencies (must be found before LLVM so imported targets exist) ───
-find_package(ZLIB)
-find_package(zstd QUIET)
+set(FLUX_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+include(compiler/sources.cmake)
 
-# ── LLVM ──────────────────────────────────────────────────────────────────────
-set(LLVM_DIR "C:/msys2/mingw64/lib/cmake/llvm" CACHE PATH "LLVM CMake config dir")
-find_package(LLVM REQUIRED CONFIG)
-message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
+# The compiler core has no dependencies beyond the C++ standard library.
+add_library(flux_core STATIC ${FLUX_COMPILER_SOURCES})
+target_include_directories(flux_core PUBLIC compiler)
 
-# ── Sources ───────────────────────────────────────────────────────────────────
-add_executable(flux
-    compiler/main.cpp
-    compiler/frontend/lexer.cpp
-    compiler/frontend/parser.cpp
-    compiler/frontend/typechecker.cpp
-    compiler/frontend/dumper.cpp
-    compiler/midend/ir.cpp
-    compiler/midend/lower_from_ast.cpp
-    compiler/midend/passes.cpp
-    compiler/backend/codegen.cpp
-    compiler/backend/native.cpp
-)
-
-target_include_directories(flux PRIVATE compiler)
-# SYSTEM suppresses warnings from LLVM headers (they have many -Wunused-parameter hits).
-target_include_directories(flux SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
-
-target_compile_definitions(flux PRIVATE ${LLVM_DEFINITIONS})
-
-# ── Compiler flags ────────────────────────────────────────────────────────────
 if(MSVC)
-    target_compile_options(flux PRIVATE /W4)
+    target_compile_options(flux_core PRIVATE /W4)
 else()
-    target_compile_options(flux PRIVATE -Wall -Wextra)
-    target_link_options(flux PRIVATE -static-libgcc)
+    target_compile_options(flux_core PRIVATE -Wall -Wextra)
 endif()
 
-# ── LLVM linking — core IR + native code generation ──────────────────────────
-llvm_map_components_to_libnames(llvm_libs
-    core support irreader
-    codegen nativecodegen native
-    passes
-)
-target_link_libraries(flux PRIVATE ${llvm_libs})
-
-# ── Copy runtime DLLs next to the binary (Windows) ───────────────────────────
-if(WIN32)
-    set(MSYS2_BIN "C:/msys2/mingw64/bin")
-    foreach(dll libstdc++-6.dll libwinpthread-1.dll libgcc_s_seh-1.dll)
-        add_custom_command(TARGET flux POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${MSYS2_BIN}/${dll}" $<TARGET_FILE_DIR:flux>
-            COMMENT "Copying ${dll}"
-        )
-    endforeach()
+add_executable(fluxc compiler/main.cpp)
+target_link_libraries(fluxc PRIVATE flux_core)
+if(MINGW)
+    target_link_options(fluxc PRIVATE -static)
 endif()
 
 # ── Unit tests ────────────────────────────────────────────────────────────────

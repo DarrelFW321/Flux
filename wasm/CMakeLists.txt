@@ -5,35 +5,23 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Source root is one level up from this CMakeLists.
-set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/..")
+set(FLUX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+include(${FLUX_ROOT}/compiler/sources.cmake)
 
-add_executable(flux_wasm
-    ${SRC}/compiler/frontend/lexer.cpp
-    ${SRC}/compiler/frontend/parser.cpp
-    ${SRC}/compiler/frontend/typechecker.cpp
-    ${SRC}/compiler/frontend/dumper.cpp
-    ${SRC}/compiler/frontend/wasm_bindings.cpp
-    ${SRC}/compiler/midend/ir.cpp
-    ${SRC}/compiler/midend/lower_from_ast.cpp
-    ${SRC}/compiler/midend/passes.cpp
-)
-
-target_include_directories(flux_wasm PRIVATE ${SRC}/compiler)
+add_executable(flux_wasm ${FLUX_COMPILER_SOURCES} ${FLUX_ROOT}/compiler/wasm_bindings.cpp)
+target_include_directories(flux_wasm PRIVATE ${FLUX_ROOT}/compiler)
 
 # Emscripten output: flux_wasm.js + flux_wasm.wasm
-set_target_properties(flux_wasm PROPERTIES
-    OUTPUT_NAME "flux_wasm"
-    SUFFIX ".js"
-)
-
-target_compile_options(flux_wasm PRIVATE -O2)
-
+set_target_properties(flux_wasm PROPERTIES OUTPUT_NAME "flux_wasm" SUFFIX ".js")
+# The lexer and parser report syntax errors by throwing, so exceptions must work.
+target_compile_options(flux_wasm PRIVATE -O2 -fexceptions)
 target_link_options(flux_wasm PRIVATE
     -lembind
+    -fexceptions
     -sMODULARIZE=1
     -sEXPORT_NAME=FluxModule
     -sALLOW_MEMORY_GROWTH=1
     -sNO_EXIT_RUNTIME=1
-    -sENVIRONMENT=web
+    -sENVIRONMENT=web,node
     -O2
 )

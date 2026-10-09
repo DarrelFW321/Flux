@@ -1,8 +1,8 @@
-// Type declaration for the Emscripten-generated FluxModule global.
-// The script is loaded via <script src="./flux_wasm.js"> in index.html.
+// The Emscripten glue (public/flux_wasm.js, loaded from index.html) defines
+// this global. See lib/compiler.ts for the typed wrapper.
 
-interface FluxWasm {
-  compile_frontend: (source: string) => string;
+interface FluxWasmModule {
+  compile(source: string, options: string): string;
 }
 
-declare function FluxModule(): Promise<FluxWasm>;
+declare var FluxModule: (() => Promise<FluxWasmModule>) | undefined;

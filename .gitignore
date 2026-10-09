@@ -70,3 +70,5 @@ frontend/public/flux_wasm.wasm
 Thumbs.db
 desktop.ini
 
+
+build_wasm/

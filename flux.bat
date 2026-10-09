@@ -1,2 +1,2 @@
 @echo off
-"%~dp0build\flux.exe" %*
+"%~dp0build\fluxc.exe" %*

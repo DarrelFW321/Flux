@@ -1,65 +1,47 @@
-import { useEffect, useRef } from 'react';
-import { DOC_SECTIONS } from '../data/docsSections';
+import { useState } from 'react';
+import { DOC_SECTIONS, type DocBlock } from '../data/docsSections';
+import { highlightLine } from '../lib/highlight';
 
-interface DocsPaneProps {
-  activeDocId: string;
-}
-
-type Block =
-  | { kind: 'code'; text: string }
-  | { kind: 'p'; text: string };
-
-// Minimal markdown: ``` fences become code blocks, blank lines split paragraphs.
-function parseBlocks(body: string): Block[] {
-  const blocks: Block[] = [];
-  body.split('```').forEach((chunk, i) => {
-    const text = chunk.replace(/^\n+|\n+$/g, '');
-    if (!text) return;
-    if (i % 2 === 1) {
-      blocks.push({ kind: 'code', text });
-    } else {
-      text.split(/\n{2,}/).forEach(p => {
-        const para = p.trim();
-        if (para) blocks.push({ kind: 'p', text: para });
-      });
-    }
-  });
-  return blocks;
-}
-
-// `backticks` inside a paragraph become inline <code>.
-function renderInline(text: string) {
-  return text.split('`').map((seg, i) =>
-    i % 2 === 1 ? <code key={i}>{seg}</code> : <span key={i}>{seg}</span>,
+function Block({ b }: { b: DocBlock }) {
+  if (b.kind === 'p') return <p>{b.text}</p>;
+  if (b.kind === 'code') {
+    return (
+      <pre className="docs-code">
+        {b.text.split('\n').map((l, i) => (
+          <div key={i}>{highlightLine(l, 'flux').map(([c, t], k) => (c ? <span key={k} className={c}>{t}</span> : t))}{l ? null : ' '}</div>
+        ))}
+      </pre>
+    );
+  }
+  return (
+    <div className="docs-table-wrap">
+      <table className="docs-table">
+        <thead><tr>{b.head.map(h => <th key={h}>{h}</th>)}</tr></thead>
+        <tbody>{b.rows.map((r, i) => <tr key={i}>{r.map((c, k) => <td key={k}>{c}</td>)}</tr>)}</tbody>
+      </table>
+    </div>
   );
 }
 
-export function DocsPane({ activeDocId }: DocsPaneProps) {
-  const containerRef = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    const el = containerRef.current?.querySelector(`#doc-${activeDocId}`);
-    el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [activeDocId]);
-
+export function DocsPane() {
+  const [active, setActive] = useState(DOC_SECTIONS[0].id);
   return (
-    <article className="docs-pane" ref={containerRef}>
-      {DOC_SECTIONS.map(section => (
-        <section key={section.id} id={`doc-${section.id}`} className="docs-section">
-          <h2 className="docs-title">{section.title}</h2>
-          <div className="docs-body">
-            {parseBlocks(section.body).map((block, i) =>
-              block.kind === 'code'
-                ? <pre key={i} className="docs-code"><code>{block.text}</code></pre>
-                : <p key={i}>{renderInline(block.text)}</p>,
-            )}
-          </div>
-        </section>
-      ))}
-      <p className="docs-footer dim">
-        Full reference in the repo: <code>docs/LANGUAGE.md</code> and{' '}
-        <code>docs/BUILD.md</code>
-      </p>
-    </article>
+    <div className="docs">
+      <nav className="docs-nav">
+        {DOC_SECTIONS.map(s => (
+          <a key={s.id} href={`#doc-${s.id}`} className={active === s.id ? 'active' : ''}
+            onClick={() => setActive(s.id)}>{s.title}</a>
+        ))}
+      </nav>
+      <article className="docs-body">
+        <h1>Flux language reference</h1>
+        {DOC_SECTIONS.map(s => (
+          <section key={s.id} id={`doc-${s.id}`}>
+            <h2>{s.title}</h2>
+            {s.blocks.map((b, i) => <Block key={i} b={b} />)}
+          </section>
+        ))}
+      </article>
+    </div>
   );
 }

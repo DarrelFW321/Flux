@@ -1,27 +1,33 @@
+# Builds fluxc (and optionally the tests and the WebAssembly module) on Windows.
+# Needs CMake, Ninja and a C++17 compiler (MinGW g++ or clang) on PATH.
 param(
     [switch]$Configure,
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$Tests,    # also build + run the Catch2 suite and spirv-val checks
+    [switch]$Wasm      # also build frontend/public/flux_wasm.{js,wasm} (needs emsdk)
 )
 
-# MSYS2 mingw64 g++ — same MSVCRT runtime as the LLVM packages installed via pacman.
-$gppDir   = "C:\msys2\mingw64\bin"
-$ninjaDir = "C:\Users\ASUS\AppData\Local\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe"
-$env:PATH = "$gppDir;$ninjaDir;$env:PATH"
-
+$ErrorActionPreference = "Stop"
 $buildDir = "$PSScriptRoot\build"
 
 if ($Clean) {
-    Remove-Item -Recurse -Force $buildDir -ErrorAction SilentlyContinue
-    Write-Output "Build directory cleaned."
+    Remove-Item -Recurse -Force $buildDir, "$PSScriptRoot\build_wasm" -ErrorAction SilentlyContinue
+    Write-Output "Build directories cleaned."
 }
 
-if ($Configure -or !(Test-Path "$buildDir\build.ninja")) {
-    New-Item -ItemType Directory -Force $buildDir | Out-Null
-    cmake -S $PSScriptRoot -B $buildDir `
-        -DCMAKE_CXX_COMPILER="$gppDir\g++.exe" `
-        -DCMAKE_BUILD_TYPE=Debug `
-        -DCMAKE_PREFIX_PATH="C:/msys2/mingw64" `
-        -G "Ninja"
+if ($Configure -or $Tests -or !(Test-Path "$buildDir\build.ninja")) {
+    $testFlag = if ($Tests) { "ON" } else { "OFF" }
+    cmake -S $PSScriptRoot -B $buildDir -G Ninja -DCMAKE_BUILD_TYPE=Release "-DFLUX_BUILD_TESTS=$testFlag"
 }
-
 cmake --build $buildDir
+
+if ($Tests) {
+    ctest --test-dir $buildDir --output-on-failure
+}
+
+if ($Wasm) {
+    emcmake cmake -S "$PSScriptRoot\wasm" -B "$PSScriptRoot\build_wasm" -G Ninja -DCMAKE_BUILD_TYPE=Release
+    cmake --build "$PSScriptRoot\build_wasm"
+    Copy-Item "$PSScriptRoot\build_wasm\flux_wasm.js", "$PSScriptRoot\build_wasm\flux_wasm.wasm" "$PSScriptRoot\frontend\public\"
+    Write-Output "Copied flux_wasm.{js,wasm} to frontend/public/"
+}

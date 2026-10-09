@@ -1,835 +1,439 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import Editor, { Monaco } from '@monaco-editor/react';
-import { JSONTree } from 'react-json-tree';
-import SyntaxHighlighter from 'react-syntax-highlighter';
-import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
-import { diffLines } from 'diff';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Editor, { type Monaco, type OnMount } from '@monaco-editor/react';
+import type { editor as MonacoEditor } from 'monaco-editor';
 import { AstGraph } from './AstGraph';
-import { Sidebar, type SidebarView } from './components/Sidebar';
+import { CodeView, DiffView, changedLines } from './components/CodeView';
 import { DocsPane } from './components/DocsPane';
-import { InspectorNav } from './components/InspectorNav';
-import { BenchmarksPage, type BenchmarkReport } from './components/BenchmarksPage';
-import { WelcomeBanner } from './components/WelcomeBanner';
-import { EXAMPLES, DEFAULT_EXAMPLE_ID, type FluxExample } from './data/examples';
+import { IrPanel } from './components/IrPanel';
+import { Preview } from './components/Preview';
+import { DEFAULT_EXAMPLE_ID, EXAMPLES } from './data/examples';
+import { compileWith, loadCompiler, type AstNode, type CompileResult, type Diagnostic } from './lib/compiler';
+import { BUILTINS, registerFlux } from './lib/fluxLanguage';
+import type { ShaderError } from './lib/gpu';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface Token {
-  type: string;
-  lexeme: string;
-  line: number;
-  col: number;
-}
-
-interface PassResult {
-  name: string;
-  changes: number;
-}
-
-interface PassStep {
-  name: string;
-  iteration: number;
-  changes: number;
-  mir_after: string;
-}
-
-interface FrontendResult {
-  tokens: Token[] | null;
-  ast: any | null;
-  mir_raw: string | null;
-  mir_optimized: string | null;
-  passes: PassResult[] | null;
-  pass_steps: PassStep[] | null;
-  error: string | null;
-}
-
-type Tab = 'tokens' | 'ast' | 'mir' | 'ir' | 'output';
-
-// Category class for color-coding rows in the token table.
-function tokenClass(type: string): string {
-  if (type.startsWith('KW_'))                      return 'tok-kw';
-  if (type === 'INT_LIT' || type === 'FLOAT_LIT')  return 'tok-lit';
-  if (type === 'IDENTIFIER')                       return 'tok-ident';
-  if (type === 'EOF')                              return 'tok-meta';
-  return 'tok-punct';
-}
-type AppPage = 'playground' | 'benchmarks';
-type AstView = 'graph' | 'json';
-type MirView = 'optimized' | 'raw' | 'diff';
-
-// ── Constants ─────────────────────────────────────────────────────────────────
+type Tab = 'wgsl' | 'spirv' | 'ir' | 'ast' | 'tokens';
+type Page = 'playground' | 'docs';
 
 const defaultExample = EXAMPLES.find(e => e.id === DEFAULT_EXAMPLE_ID) ?? EXAMPLES[0];
 
-const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL ?? '';
+function initialSource(): { id: string; source: string } {
+  const m = /^#src=(.+)$/.exec(window.location.hash);
+  if (m) {
+    try {
+      return { id: 'shared', source: decodeURIComponent(escape(atob(m[1]))) };
+    } catch { /* fall through */ }
+  }
+  return { id: defaultExample.id, source: defaultExample.source };
+}
 
-const PIPELINE_TABS: Tab[] = ['tokens', 'ast', 'mir', 'ir'];
-// react-json-tree theme tuned to match the minimal dark palette.
-const JSON_THEME = {
-  scheme: 'flux',
-  base00: 'transparent',
-  base01: '#18181b',
-  base02: '#27272a',
-  base03: '#52525b',
-  base04: '#71717a',
-  base05: '#a1a1aa',
-  base06: '#d4d4d8',
-  base07: '#fafafa',
-  base08: '#f87171',
-  base09: '#fbbf24',
-  base0A: '#fcd34d',
-  base0B: '#86efac',
-  base0C: '#67e8f9',
-  base0D: '#93c5fd',
-  base0E: '#c4b5fd',
-  base0F: '#fbcfe8',
-};
+function walkAst(n: AstNode, f: (n: AstNode) => void) {
+  f(n);
+  for (const c of n.children) walkAst(c.node, f);
+}
 
-// Custom Monaco theme — flat, matches the rest of the surface.
-const beforeEditorMount = (monaco: Monaco) => {
-  monaco.editor.defineTheme('flux-dark', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [
-      { token: 'keyword',    foreground: 'c4b5fd' },
-      { token: 'number',     foreground: 'fbbf24' },
-      { token: 'string',     foreground: '86efac' },
-      { token: 'comment',    foreground: '52525b', fontStyle: 'italic' },
-      { token: 'identifier', foreground: 'e4e4e7' },
-      { token: 'type',       foreground: '93c5fd' },
-    ],
-    colors: {
-      'editor.background':              '#111114',
-      'editor.foreground':              '#e4e4e7',
-      'editorLineNumber.foreground':    '#3f3f46',
-      'editorLineNumber.activeForeground': '#a1a1aa',
-      'editor.lineHighlightBackground': '#18181b',
-      'editor.lineHighlightBorder':     '#18181b00',
-      'editor.selectionBackground':     '#27272a',
-      'editor.inactiveSelectionBackground': '#1f1f23',
-      'editorCursor.foreground':        '#fafafa',
-      'editorGutter.background':        '#111114',
-      'editorIndentGuide.background1':  '#18181b',
-      'editorIndentGuide.activeBackground1': '#27272a',
-      'scrollbarSlider.background':         '#27272a80',
-      'scrollbarSlider.hoverBackground':    '#3f3f4680',
-      'scrollbarSlider.activeBackground':   '#52525b80',
-      'editorWidget.background':       '#111114',
-      'editorWidget.border':           '#1f1f23',
-    },
-  });
-};
+function countAst(n: AstNode | null) {
+  let k = 0;
+  if (n) walkAst(n, () => k++);
+  return k;
+}
 
-// ── App ───────────────────────────────────────────────────────────────────────
+function download(name: string, data: BlobPart, type: string) {
+  const url = URL.createObjectURL(new Blob([data], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+interface Changes { changed: Set<number>; added: number; removed: number }
+const NO_CHANGES: Changes = { changed: new Set(), added: 0, removed: 0 };
 
 export default function App() {
-  const [source, setSource]           = useState(defaultExample.source);
-  const [selectedExampleId, setSelectedExampleId] = useState(defaultExample.id);
-  const [sidebarView, setSidebarView]         = useState<SidebarView>('examples');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [mobilePanel, setMobilePanel]         = useState<'editor' | 'inspect'>('editor');
-  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
-  const [splitPx, setSplitPx]               = useState<number | null>(null);
-  const workspaceRef                        = useRef<HTMLElement>(null);
-  const [activeDocId, setActiveDocId] = useState('overview');
-  const [lastPipelineTab, setLastPipelineTab] = useState<Tab>('tokens');
-  const [appPage, setAppPage]             = useState<AppPage>('playground');
-  const [welcomeCollapsed, setWelcomeCollapsed] = useState(false);
-  const [result, setResult]           = useState<FrontendResult>({
-    tokens: null, ast: null, mir_raw: null, mir_optimized: null,
-    passes: null, pass_steps: null, error: null,
-  });
-  const [activeTab, setActiveTab]     = useState<Tab>('tokens');
-  const [astView, setAstView]         = useState<AstView>('graph');
-  const [mirView, setMirView]         = useState<MirView>('optimized');
-  const [ir, setIr]                   = useState('');
-  const [irLoading, setIrLoading]     = useState(false);
-  const [irError, setIrError]         = useState('');
-  const [output, setOutput]           = useState('');
-  const [runLoading, setRunLoading]   = useState(false);
-  const [runError, setRunError]       = useState('');
-  const [wasmReady, setWasmReady]     = useState(false);
-  const [bench, setBench]             = useState<BenchmarkReport | null>(null);
-  const [benchLoading, setBenchLoading] = useState(false);
-  const [benchError, setBenchError]   = useState('');
+  const init = useMemo(initialSource, []);
+  const [page, setPage] = useState<Page>('playground');
+  const [exampleId, setExampleId] = useState(init.id);
+  const [source, setSource] = useState(init.source);
+  const [wasm, setWasm] = useState<Awaited<ReturnType<typeof loadCompiler>> | null>(null);
+  const [wasmError, setWasmError] = useState<string | null>(null);
+  const [result, setResult] = useState<CompileResult | null>(null);
+  const [lastOk, setLastOk] = useState<CompileResult | null>(null);
+  const [prevOk, setPrevOk] = useState<CompileResult | null>(null);
+  const [changeKey, setChangeKey] = useState(0);
+  const [gpuErrors, setGpuErrors] = useState<ShaderError[]>([]);
+  const [tab, setTab] = useState<Tab>('wgsl');
+  const [showDiff, setShowDiff] = useState(false);
+  const [optimize, setOptimize] = useState(true);
+  const [disabled, setDisabled] = useState<string[]>([]);
+  const [cursorLine, setCursorLine] = useState<number | null>(null);
+  const [hoverSrc, setHoverSrc] = useState<number | null>(null);
+  const [copied, setCopied] = useState(false);
 
-  const fluxRef  = useRef<FluxWasm | null>(null);
-  const debounce = useRef<ReturnType<typeof setTimeout>>();
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<Monaco | null>(null);
+  const decoRef = useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
+  const astRef = useRef<AstNode | null>(null);
+  const lastOkRef = useRef<CompileResult | null>(null);
 
   useEffect(() => {
-    if (window.matchMedia('(max-width: 767px)').matches) setWelcomeCollapsed(true);
+    loadCompiler().then(setWasm, e => setWasmError(String(e.message ?? e)));
   }, []);
 
+  // ── Live compilation ──────────────────────────────────────────────────
   useEffect(() => {
-    if (typeof FluxModule === 'undefined') return;
-    FluxModule()
-      .then(m => { fluxRef.current = m; setWasmReady(true); })
-      .catch(() => {/* WASM unavailable in local dev without a build */});
-  }, []);
+    if (!wasm) return;
+    const t = setTimeout(() => {
+      const r = compileWith(wasm, source, { optimize, disabled });
+      setResult(r);
+      if (r.ast) astRef.current = r.ast;
+      if (r.ok) {
+        setPrevOk(lastOkRef.current);
+        lastOkRef.current = r;
+        setLastOk(r);
+        setChangeKey(k => k + 1);
+      }
+    }, 120);
+    return () => clearTimeout(t);
+  }, [wasm, source, optimize, disabled]);
 
-  const startResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const ws   = workspaceRef.current;
-    const pane = ws?.querySelector<HTMLElement>('.center-pane');
-    if (!ws || !pane) return;
-    // The pane's left edge stays fixed during the drag; only its width changes.
-    const paneLeft = pane.getBoundingClientRect().left;
-    const wsRight  = ws.getBoundingClientRect().right;
-    // Reserve right padding (16) + handle gap (12) + min inspector width (200).
-    const maxWidth = wsRight - paneLeft - 16 - 12 - 200;
+  const onShaderErrors = useCallback((errs: ShaderError[]) => setGpuErrors(errs), []);
 
-    const onMove = (ev: MouseEvent) => {
-      setSplitPx(Math.max(200, Math.min(maxWidth, ev.clientX - paneLeft)));
-    };
-
-    const onUp = () => {
-      document.body.style.cursor    = '';
-      document.body.style.userSelect = '';
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup',   onUp);
-    };
-
-    document.body.style.cursor    = 'col-resize';
-    document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup',   onUp);
-  }, []);
-
-  const runFrontend = useCallback((src: string) => {
-    if (!fluxRef.current) return;
-    try {
-      const raw = fluxRef.current.compile_frontend(src);
-      setResult(JSON.parse(raw) as FrontendResult);
-    } catch (e) {
-      setResult({
-        tokens: null, ast: null, mir_raw: null, mir_optimized: null,
-        passes: null, pass_steps: null, error: String(e),
-      });
+  // Diagnostics: the compiler's, plus anything WebGPU reports about the WGSL,
+  // mapped back to Flux source lines through the WGSL source map.
+  const diagnostics: Diagnostic[] = useMemo(() => {
+    const ds = [...(result?.diagnostics ?? [])];
+    if (result?.ok && lastOk === result) {
+      for (const e of gpuErrors) {
+        const src = e.line > 0 ? lastOk.wgsl.map[e.line - 1] ?? 0 : 0;
+        ds.push({ severity: 'error', message: `WebGPU: ${e.message}`, line: src || 1, col: 1, len: 1, source: 'webgpu' });
+      }
     }
-  }, []);
+    return ds;
+  }, [result, gpuErrors, lastOk]);
 
+  const errors = diagnostics.filter(d => d.severity === 'error').length;
+  const warnings = diagnostics.filter(d => d.severity === 'warning').length;
+
+  // Editor markers
   useEffect(() => {
-    if (!wasmReady) return;
-    clearTimeout(debounce.current);
-    debounce.current = setTimeout(() => runFrontend(source), 300);
-    return () => clearTimeout(debounce.current);
-  }, [source, wasmReady, runFrontend]);
+    const monaco = monacoRef.current;
+    const model = editorRef.current?.getModel();
+    if (!monaco || !model) return;
+    monaco.editor.setModelMarkers(model, 'flux', diagnostics.map(d => ({
+      severity: d.severity === 'error' ? monaco.MarkerSeverity.Error
+              : d.severity === 'warning' ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Info,
+      message: d.message,
+      startLineNumber: Math.max(1, d.line),
+      startColumn: Math.max(1, d.col),
+      endLineNumber: Math.max(1, d.line),
+      endColumn: Math.max(1, d.col) + Math.max(1, d.len),
+    })));
+  }, [diagnostics]);
 
-  const runProgram = async () => {
-    if (!BACKEND_URL) { setRunError('VITE_BACKEND_URL is not set.'); return; }
-    setRunLoading(true); setRunError(''); setOutput('');
-    try {
-      const res = await fetch(`${BACKEND_URL}/run`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ source }),
-      });
-      const data = await res.json();
-      if (data.error) setRunError(data.error);
-      else            setOutput(data.output ?? '');
-    } catch {
-      setRunError('Could not reach the backend.');
-    } finally {
-      setRunLoading(false);
-    }
+  // Highlight the source line linked to whatever output line is hovered.
+  useEffect(() => {
+    const ed = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!ed || !monaco) return;
+    decoRef.current ??= ed.createDecorationsCollection();
+    decoRef.current.set(hoverSrc ? [{
+      range: new monaco.Range(hoverSrc, 1, hoverSrc, 1),
+      options: { isWholeLine: true, className: 'src-linked-line', linesDecorationsClassName: 'src-linked-gutter' },
+    }] : []);
+  }, [hoverSrc]);
+
+  const onMount: OnMount = (ed, monaco) => {
+    editorRef.current = ed;
+    monacoRef.current = monaco;
+    ed.onDidChangeCursorPosition(e => setCursorLine(e.position.lineNumber));
+    // Hover: show the inferred type of the expression under the cursor.
+    monaco.languages.registerHoverProvider('flux', {
+      provideHover(_model, pos) {
+        const ast = astRef.current;
+        if (!ast) return null;
+        let best: AstNode | null = null;
+        walkAst(ast, n => {
+          if (n.cat !== 'expr' || n.line !== pos.lineNumber || !n.type) return;
+          const len = n.label === 'Swizzle' ? n.detail.length - 1
+                    : n.label === 'Call' || n.label === 'Builtin' ? n.detail.length - 2
+                    : n.label === 'Construct' || n.label === 'Ident' ? n.detail.length : 0;
+          if (len > 0 && pos.column >= n.col && pos.column < n.col + len) best = n;
+        });
+        const n = best as AstNode | null;
+        if (!n) return null;
+        const name = n.label === 'Swizzle' ? n.detail : n.detail.replace(/\(\)$/, '');
+        const lines = [`\`\`\`flux\n${name}: ${n.type}\n\`\`\``];
+        if (n.label === 'Builtin' && BUILTINS[name]) lines.push(BUILTINS[name]);
+        return { contents: lines.map(value => ({ value })) };
+      },
+    });
   };
 
-  const runBenchmark = async () => {
-    if (!BACKEND_URL) { setBenchError('VITE_BACKEND_URL is not set.'); return; }
-    setBenchLoading(true); setBenchError(''); setBench(null);
-    try {
-      const res  = await fetch(`${BACKEND_URL}/benchmark`, { method: 'POST' });
-      const data = await res.json() as BenchmarkReport;
-      if (data.error) setBenchError(data.error);
-      else            setBench(data);
-    } catch {
-      setBenchError('Could not reach the backend.');
-    } finally {
-      setBenchLoading(false);
-    }
+  const pickSrc = useCallback((line: number) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    ed.revealLineInCenterIfOutsideViewport(line);
+    ed.setPosition({ lineNumber: line, column: 1 });
+    ed.focus();
+  }, []);
+
+  const jumpTo = (d: Diagnostic) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    ed.revealLineInCenter(d.line);
+    ed.setPosition({ lineNumber: d.line, column: d.col });
+    ed.focus();
   };
 
-  const loadExample = (ex: FluxExample) => {
-    setSelectedExampleId(ex.id);
+  const loadExample = (id: string) => {
+    const ex = EXAMPLES.find(e => e.id === id);
+    if (!ex) return;
+    setExampleId(id);
     setSource(ex.source);
-    setSidebarView('examples');
+    lastOkRef.current = null;   // a new example isn't an "edit": don't diff against the old one
+    if (window.location.hash) history.replaceState(null, '', window.location.pathname);
   };
 
-  const selectInspectorTab = (tab: Tab) => {
-    if (PIPELINE_TABS.includes(tab)) setLastPipelineTab(tab);
-    setActiveTab(tab);
+  const share = async () => {
+    const url = `${window.location.origin}${window.location.pathname}#src=${btoa(unescape(encodeURIComponent(source)))}`;
+    history.replaceState(null, '', url);
+    try { await navigator.clipboard.writeText(url); } catch { /* the URL bar still has it */ }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   };
 
-  const mobileGoInspect = (tab: Tab) => {
-    selectInspectorTab(tab);
-    setMobilePanel('inspect');
-  };
+  // ── What changed since the previous successful compile ───────────────
+  const same = !prevOk || !lastOk;
+  const wgslChanges = useMemo<Changes>(() => same ? NO_CHANGES : changedLines(prevOk!.wgsl.code, lastOk!.wgsl.code), [prevOk, lastOk, same]);
+  const spirvChanges = useMemo<Changes>(() => same ? NO_CHANGES : changedLines(prevOk!.spirv.text, lastOk!.spirv.text), [prevOk, lastOk, same]);
+  const irChanges = useMemo<Changes>(() => same ? NO_CHANGES : changedLines(prevOk!.ir.opt, lastOk!.ir.opt), [prevOk, lastOk, same]);
 
-  const fetchIR = async () => {
-    if (!BACKEND_URL) { setIrError('VITE_BACKEND_URL is not set.'); return; }
-    setIrLoading(true); setIrError(''); setIr('');
-    try {
-      const res = await fetch(`${BACKEND_URL}/compile`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ source }),
-      });
-      const data = await res.json();
-      if (data.error) setIrError(data.error);
-      else            setIr(data.ir ?? '');
-    } catch {
-      setIrError('Could not reach the backend.');
-    } finally {
-      setIrLoading(false);
-    }
+  const fragmentEntry = lastOk?.reflection.entries.find(e => e.stage === 'fragment')?.name ?? null;
+  const linked = hoverSrc ?? cursorLine;
+  const compileMs = result?.timings.reduce((s, t) => s + t.ms, 0) ?? 0;
+  const view = lastOk;   // outputs show the last good compile while the source has errors
+  const stale = !!result && !result.ok;
+
+  const tabs: { id: Tab; label: string; stat: string; changes?: Changes }[] = [
+    { id: 'tokens', label: 'Tokens', stat: String(result?.tokens.length ?? 0) },
+    { id: 'ast', label: 'AST', stat: `${countAst(result?.ast ?? null)} nodes` },
+    { id: 'ir', label: 'FluxIR', stat: `${view?.ir.instsAfter ?? 0} insts`, changes: irChanges },
+    { id: 'wgsl', label: 'WGSL', stat: `${(view?.wgsl.code ?? '').split('\n').length - 1} lines`, changes: wgslChanges },
+    { id: 'spirv', label: 'SPIR-V', stat: `${((view?.spirv.words?.length ?? 0) * 4 / 1024).toFixed(1)} KB`, changes: spirvChanges },
+  ];
+
+  const common = {
+    linkedSrc: linked,
+    follow: hoverSrc === null,
+    changeKey,
+    onHoverSrc: setHoverSrc,
+    onPickSrc: pickSrc,
   };
 
   return (
     <div className="app">
-      <header className="header">
-        <button
-          type="button"
-          className="mobile-menu-btn"
-          onClick={() => setMobileDrawerOpen(true)}
-          aria-label="Open examples"
-        >
-          ☰
-        </button>
+      <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">flux</span>
-          <span className="brand-sep">/</span>
-          <span className="brand-sub">compiler visualizer</span>
+          <span className="brand-logo" aria-hidden>
+            <svg viewBox="0 0 24 24" width="18" height="18"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#a78bfa" /><stop offset="1" stopColor="#22d3ee" /></linearGradient></defs><path d="M4 20 L12 4 L20 20 Z" fill="none" stroke="url(#g)" strokeWidth="2.2" strokeLinejoin="round" /><circle cx="12" cy="14" r="2.4" fill="url(#g)" /></svg>
+          </span>
+          <span className="brand-name">flux</span>
+          <span className="brand-tag">shader compiler</span>
         </div>
-        <nav className="header-pages" aria-label="Main sections">
-          <button
-            type="button"
-            className={`header-page-btn ${appPage === 'playground' ? 'active' : ''}`}
-            onClick={() => setAppPage('playground')}
-          >
-            Playground
-          </button>
-          <button
-            type="button"
-            className={`header-page-btn ${appPage === 'benchmarks' ? 'active' : ''}`}
-            onClick={() => setAppPage('benchmarks')}
-          >
-            Benchmarks
-          </button>
+        <nav className="topnav">
+          <button className={page === 'playground' ? 'active' : ''} onClick={() => setPage('playground')}>Playground</button>
+          <button className={page === 'docs' ? 'active' : ''} onClick={() => setPage('docs')}>Reference</button>
         </nav>
-        <div className="header-meta">
-          <a
-            className="header-gh"
-            href="https://github.com/DarrelFW321/flux"
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="GitHub repository"
-          >
-            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden>
-              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
-            </svg>
-            <span className="header-gh-label">GitHub</span>
+        <div className="topbar-right">
+          <span className={`pill ${wasm ? 'ok' : wasmError ? 'bad' : 'wait'}`}>
+            <span className="dot" />{wasm ? `wasm · ${compileMs.toFixed(1)} ms` : wasmError ? 'wasm missing' : 'loading wasm'}
+          </span>
+          <a className="gh" href="https://github.com/DarrelFW321/flux" target="_blank" rel="noopener noreferrer" aria-label="GitHub">
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" /></svg>
           </a>
-          <span className={`status-dot ${wasmReady ? 'ok' : 'warn'}`} aria-hidden />
-          <span>{wasmReady ? 'wasm ready' : 'wasm loading'}</span>
         </div>
       </header>
 
-      <WelcomeBanner
-        collapsed={welcomeCollapsed}
-        onCollapse={() => setWelcomeCollapsed(true)}
-        onExpand={() => setWelcomeCollapsed(false)}
-        onGoPlayground={() => { setAppPage('playground'); setWelcomeCollapsed(true); }}
-        onGoBenchmarks={() => { setAppPage('benchmarks'); setWelcomeCollapsed(true); }}
-      />
-
-      {appPage === 'benchmarks' ? (
-        <main className="benchmarks-workspace">
-          <BenchmarksPage
-            report={bench}
-            loading={benchLoading}
-            error={benchError}
-            onRun={runBenchmark}
-          />
-        </main>
-      ) : (
-      <main className={`workspace workspace--${mobilePanel}`} ref={workspaceRef}>
-        {mobileDrawerOpen && (
-          <div className="mobile-backdrop" onClick={() => setMobileDrawerOpen(false)} />
-        )}
-        <Sidebar
-          view={sidebarView}
-          onViewChange={setSidebarView}
-          selectedExampleId={selectedExampleId}
-          onSelectExample={ex => { loadExample(ex); setMobileDrawerOpen(false); }}
-          activeDocId={activeDocId}
-          onSelectDoc={id => { setActiveDocId(id); setSidebarView('docs'); setMobileDrawerOpen(false); }}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(c => !c)}
-          mobileOpen={mobileDrawerOpen}
-        />
-
-        <section
-          className="pane center-pane"
-          style={splitPx !== null ? { flex: `0 0 ${splitPx}px` } : undefined}
-        >
-          {sidebarView === 'docs' ? (
-            <DocsPane activeDocId={activeDocId} />
-          ) : (
-            <>
-              <div className="editor-toolbar">
-                <span className="editor-label">
-                  {EXAMPLES.find(e => e.id === selectedExampleId)?.title ?? 'Editor'}
-                </span>
-              </div>
-              <div style={{ flex: 1, minHeight: 0 }}>
+      {page === 'docs' ? <DocsPane /> : (
+        <main className="workspace">
+          {/* ── Editor ─────────────────────────────────────────────── */}
+          <section className="panel editor-panel">
+            <div className="panel-head">
+              <select className="example-select" value={exampleId} onChange={e => loadExample(e.target.value)} aria-label="Example">
+                {exampleId === 'shared' && <option value="shared">Shared shader</option>}
+                {EXAMPLES.map(ex => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
+              </select>
+              <span className="panel-sub">{EXAMPLES.find(e => e.id === exampleId)?.description ?? 'from a shared link'}</span>
+              <button className="ghost-btn" onClick={share}>{copied ? 'Link copied' : 'Share'}</button>
+            </div>
+            <div className="editor-wrap">
               <Editor
                 height="100%"
-                defaultLanguage="rust"
+                language="flux"
                 theme="flux-dark"
                 value={source}
-                beforeMount={beforeEditorMount}
+                beforeMount={registerFlux}
+                onMount={onMount}
                 onChange={v => setSource(v ?? '')}
                 options={{
                   fontSize: 13,
-                  fontFamily: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace",
+                  fontFamily: "'JetBrains Mono', 'Cascadia Code', monospace",
                   fontLigatures: true,
                   minimap: { enabled: false },
                   scrollBeyondLastLine: false,
-                  wordWrap: 'on',
-                  padding: { top: 16, bottom: 16 },
-                  renderLineHighlight: 'gutter',
+                  padding: { top: 14, bottom: 14 },
+                  renderLineHighlight: 'all',
                   smoothScrolling: true,
                   cursorBlinking: 'smooth',
                   cursorSmoothCaretAnimation: 'on',
                   guides: { indentation: false },
                   overviewRulerLanes: 0,
-                  hideCursorInOverviewRuler: true,
-                  scrollbar: { vertical: 'auto', horizontal: 'auto', verticalScrollbarSize: 10 },
+                  tabSize: 4,
+                  automaticLayout: true,
                 }}
               />
-              </div>
-            </>
-          )}
-        </section>
-
-        <div
-          className="resize-handle"
-          onMouseDown={startResize}
-          role="separator"
-          aria-label="Drag to resize panels"
-        />
-        <section
-          className="pane inspector-pane"
-          style={splitPx !== null ? { flex: 1, minWidth: 0, maxWidth: 'none' } : undefined}
-        >
-          <InspectorNav
-            activeTab={activeTab}
-            lastPipelineTab={lastPipelineTab as 'tokens' | 'ast' | 'mir' | 'ir'}
-            onTabChange={selectInspectorTab}
-          />
-
-          <div className="panel-body">
-            {result.error && <div className="error-banner">{result.error}</div>}
-
-            {/* ── Tokens ── */}
-            {activeTab === 'tokens' && (
-              !wasmReady
-                ? <Placeholder>Loading wasm…</Placeholder>
-                : result.tokens
-                  ? (
-                    <div className="scroll-area">
-                      <table className="token-table">
-                        <thead>
-                          <tr><th>Type</th><th>Lexeme</th><th>Line</th><th>Col</th></tr>
-                        </thead>
-                        <tbody>
-                          {result.tokens.map((tok, i) => (
-                            <tr key={i}>
-                              <td className={`tok-type ${tokenClass(tok.type)}`}>{tok.type}</td>
-                              <td className="tok-lex">{tok.lexeme || <span className="dim">·</span>}</td>
-                              <td className="num">{tok.line}</td>
-                              <td className="num">{tok.col}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )
-                  : <Placeholder>Type something to see tokens.</Placeholder>
-            )}
-
-            {/* ── AST ── */}
-            {activeTab === 'ast' && (
-              <div className="ast-pane">
-                <div className="subtab-bar">
-                  <button
-                    className={`subtab-btn ${astView === 'graph' ? 'active' : ''}`}
-                    onClick={() => setAstView('graph')}
-                  >Graph</button>
-                  <button
-                    className={`subtab-btn ${astView === 'json' ? 'active' : ''}`}
-                    onClick={() => setAstView('json')}
-                  >JSON</button>
-                </div>
-                {!wasmReady
-                  ? <Placeholder>Loading wasm…</Placeholder>
-                  : result.ast
-                    ? (astView === 'graph'
-                        ? <AstGraph ast={result.ast} />
-                        : (
-                          <div className="scroll-area ast-json">
-                            <JSONTree
-                              data={result.ast}
-                              theme={JSON_THEME}
-                              invertTheme={false}
-                              hideRoot={false}
-                              shouldExpandNodeInitially={(_, __, level) => level < 2}
-                            />
-                          </div>
-                        ))
-                    : <Placeholder>Type something to see the AST.</Placeholder>
-                }
-              </div>
-            )}
-
-            {/* ── MIR ── */}
-            {activeTab === 'mir' && (
-              <MirPane
-                wasmReady={wasmReady}
-                raw={result.mir_raw}
-                optimized={result.mir_optimized}
-                passes={result.passes}
-                steps={result.pass_steps}
-                view={mirView}
-                onViewChange={setMirView}
-              />
-            )}
-
-            {/* ── IR ── */}
-            {activeTab === 'ir' && (
-              <div className="action-pane">
-                <div className="action-bar">
-                  <button className="action-btn" onClick={fetchIR} disabled={irLoading}>
-                    {irLoading ? 'Generating…' : 'Generate IR'}
-                  </button>
-                </div>
-
-                {irLoading && (
-                  <div className="notice">
-                    <span className="spinner" /> Generating LLVM IR. Cold starts can
-                    add ~30s; subsequent requests are instant.
-                  </div>
-                )}
-
-                {irError && <div className="error-banner">{irError}</div>}
-
-                {ir && (
-                  <div className="scroll-area">
-                    <SyntaxHighlighter
-                      language="llvm"
-                      style={atomOneDark}
-                      customStyle={{
-                        margin: 0,
-                        padding: 16,
-                        background: 'transparent',
-                        fontSize: 12.5,
-                        fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
-                        lineHeight: 1.55,
-                      }}
-                    >
-                      {ir}
-                    </SyntaxHighlighter>
-                  </div>
-                )}
-
-                {!ir && !irLoading && !irError && (
-                  <Placeholder>
-                    Generate IR to compile via the backend.
-                    <br />
-                    <span className="dim">Tokens and AST update instantly in your browser.</span>
-                  </Placeholder>
-                )}
-              </div>
-            )}
-
-            {/* ── Output ── */}
-            {activeTab === 'output' && (
-              <div className="action-pane">
-                <div className="action-bar">
-                  <button className="action-btn" onClick={runProgram} disabled={runLoading}>
-                    {runLoading ? 'Running…' : 'Run'}
-                  </button>
-                </div>
-
-                {runLoading && (
-                  <div className="notice">
-                    <span className="spinner" /> Compiling and executing. Cold starts
-                    can add ~30s; subsequent runs are instant.
-                  </div>
-                )}
-
-                {runError && <div className="error-banner">{runError}</div>}
-
-                {output && (
-                  <div className="scroll-area">
-                    <div className="terminal">
-                      <div className="terminal-head">
-                        <span className="terminal-dot" aria-hidden />
-                        stdout
-                      </div>
-                      <pre className="output-box">{output}</pre>
-                    </div>
-                  </div>
-                )}
-
-                {!output && !runLoading && !runError && (
-                  <Placeholder>Run to compile and execute on the backend.</Placeholder>
-                )}
-              </div>
-            )}
-
-          </div>
-        </section>
-
-        <nav className="mobile-nav" aria-label="Mobile navigation">
-          <button
-            type="button"
-            className={`mobile-nav-btn ${mobilePanel === 'editor' ? 'active' : ''}`}
-            onClick={() => setMobilePanel('editor')}
-          >
-            <span className="mobile-nav-icon">{`</>`}</span>
-            Code
-          </button>
-          <button
-            type="button"
-            className={`mobile-nav-btn ${mobilePanel === 'inspect' && activeTab !== 'output' ? 'active' : ''}`}
-            onClick={() => mobileGoInspect(lastPipelineTab as Tab)}
-          >
-            <span className="mobile-nav-icon">⬡</span>
-            Pipeline
-          </button>
-          <button
-            type="button"
-            className={`mobile-nav-btn ${mobilePanel === 'inspect' && activeTab === 'output' ? 'active' : ''}`}
-            onClick={() => mobileGoInspect('output')}
-          >
-            <span className="mobile-nav-icon">▶</span>
-            Run
-          </button>
-        </nav>
-      </main>
-      )}
-    </div>
-  );
-}
-
-function Placeholder({ children }: { children: React.ReactNode }) {
-  return <div className="placeholder">{children}</div>;
-}
-
-// ── MIR pane ────────────────────────────────────────────────────────────────
-
-interface MirPaneProps {
-  wasmReady: boolean;
-  raw: string | null;
-  optimized: string | null;
-  passes: PassResult[] | null;
-  steps: PassStep[] | null;
-  view: MirView;
-  onViewChange: (v: MirView) => void;
-}
-
-function MirPane({
-  wasmReady, raw, optimized, passes, steps, view, onViewChange,
-}: MirPaneProps) {
-  return (
-    <div className="ast-pane">
-      <div className="subtab-bar mir-subtab-bar">
-        <div className="subtab-group">
-          {(['optimized', 'raw', 'diff'] as MirView[]).map(v => (
-            <button
-              key={v}
-              className={`subtab-btn ${view === v ? 'active' : ''}`}
-              onClick={() => onViewChange(v)}
-            >
-              {v}
-            </button>
-          ))}
-        </div>
-        {passes && passes.length > 0 && (
-          <div className="pass-chips" title="optimization passes applied">
-            {passes.map((p, i) => (
-              <span key={p.name + i} className={`pass-chip ${p.changes ? 'changed' : ''}`}>
-                {p.name}
-                <span className="pass-chip-count">{p.changes}</span>
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {!wasmReady ? (
-        <Placeholder>Loading wasm…</Placeholder>
-      ) : !raw ? (
-        <Placeholder>
-          Type something to see the mid-level IR.
-          <br />
-          <span className="dim">
-            FluxIR sits between the AST and LLVM. Whole-array ops appear as
-            single instructions; optimization passes run before LLVM codegen.
-          </span>
-        </Placeholder>
-      ) : view === 'diff' ? (
-        <MirDiff raw={raw} steps={steps ?? []} />
-      ) : (
-        <div className="scroll-area mir-pane">
-          <SyntaxHighlighter
-            language="llvm"
-            style={atomOneDark}
-            customStyle={{
-              margin: 0,
-              padding: 16,
-              background: 'transparent',
-              fontSize: 12.5,
-              fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
-              lineHeight: 1.55,
-            }}
-          >
-            {view === 'optimized' ? (optimized ?? raw) : raw}
-          </SyntaxHighlighter>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Step-driven diff ────────────────────────────────────────────────────────
-
-interface MirDiffProps {
-  raw: string;
-  steps: PassStep[];
-}
-
-function MirDiff({ raw, steps }: MirDiffProps) {
-  // Default selection: the last step that actually produced changes, so the
-  // diff is non-empty on first load. Fall back to the last step.
-  const defaultIdx = useMemo(() => {
-    for (let i = steps.length - 1; i >= 0; --i) if (steps[i].changes > 0) return i;
-    return steps.length - 1;
-  }, [steps]);
-
-  const [selected, setSelected] = useState(defaultIdx);
-  // Re-clamp when the program changes (steps array reference changes).
-  useEffect(() => { setSelected(defaultIdx); }, [defaultIdx]);
-
-  const totalChanges = useMemo(
-    () => steps.reduce((s, p) => s + p.changes, 0),
-    [steps],
-  );
-
-  if (steps.length === 0) {
-    return <Placeholder>No passes ran.</Placeholder>;
-  }
-  if (totalChanges === 0) {
-    return (
-      <Placeholder>
-        Optimization passes produced no changes for this program.
-        <br />
-        <span className="dim">Try adding `let x = 2 + 3 * 4;` or `let y = a * 0;`.</span>
-      </Placeholder>
-    );
-  }
-
-  const safeIdx = Math.min(Math.max(selected, 0), steps.length - 1);
-  const current = steps[safeIdx];
-  const before  = safeIdx === 0 ? raw : steps[safeIdx - 1].mir_after;
-  const after   = current.mir_after;
-
-  return (
-    <div className="mir-diff-container">
-      <PassTimeline steps={steps} selectedIdx={safeIdx} onSelect={setSelected} />
-      <div className="diff-header">
-        <span className="diff-header-label">
-          step {safeIdx + 1} / {steps.length} —{' '}
-          <strong>{current.name}</strong>{' '}
-          <span className="dim">iter {current.iteration}</span>
-        </span>
-        <span className={`diff-header-changes ${current.changes ? 'has-changes' : 'no-changes'}`}>
-          {current.changes} change{current.changes === 1 ? '' : 's'}
-        </span>
-      </div>
-      {current.changes === 0 ? (
-        <div className="diff-empty">
-          <span className="dim">This pass made no changes at this iteration.</span>
-        </div>
-      ) : (
-        <DiffBody before={before} after={after} />
-      )}
-    </div>
-  );
-}
-
-function PassTimeline({
-  steps, selectedIdx, onSelect,
-}: { steps: PassStep[]; selectedIdx: number; onSelect: (i: number) => void }) {
-  return (
-    <div className="pass-timeline">
-      <button
-        className="timeline-nav"
-        onClick={() => onSelect(Math.max(selectedIdx - 1, 0))}
-        disabled={selectedIdx === 0}
-        aria-label="previous pass"
-      >
-        ‹
-      </button>
-      <div className="timeline-track">
-        {steps.map((step, idx) => {
-          const isActive = idx === selectedIdx;
-          const changed  = step.changes > 0;
-          return (
-            <button
-              key={idx}
-              className={`timeline-step ${isActive ? 'active' : ''} ${changed ? 'changed' : 'noop'}`}
-              onClick={() => onSelect(idx)}
-              title={`${step.name} · iteration ${step.iteration} · ${step.changes} change${step.changes === 1 ? '' : 's'}`}
-            >
-              <span className="timeline-dot" />
-              <span className="timeline-name">{step.name}</span>
-              <span className="timeline-count">{step.changes}</span>
-            </button>
-          );
-        })}
-      </div>
-      <button
-        className="timeline-nav"
-        onClick={() => onSelect(Math.min(selectedIdx + 1, steps.length - 1))}
-        disabled={selectedIdx === steps.length - 1}
-        aria-label="next pass"
-      >
-        ›
-      </button>
-    </div>
-  );
-}
-
-function DiffBody({ before, after }: { before: string; after: string }) {
-  const parts = useMemo(() => diffLines(before, after), [before, after]);
-  return (
-    <div className="scroll-area mir-diff">
-      <pre>
-        {parts.flatMap((part, partIdx) => {
-          const lines = part.value.split('\n');
-          if (lines.length && lines[lines.length - 1] === '') lines.pop();
-          const cls    = part.added ? 'added' : part.removed ? 'removed' : 'context';
-          const prefix = part.added ? '+' : part.removed ? '−' : ' ';
-          return lines.map((line, i) => (
-            <div key={`${partIdx}-${i}`} className={`diff-line ${cls}`}>
-              <span className="diff-marker">{prefix}</span>
-              <span className="diff-text">{line || '\u00a0'}</span>
             </div>
-          ));
-        })}
-      </pre>
+            <div className={`diag-panel ${errors ? 'has-errors' : ''}`}>
+              <div className="diag-head">
+                <span className={`diag-count err ${errors ? 'on' : ''}`}>{errors} error{errors === 1 ? '' : 's'}</span>
+                <span className={`diag-count warn ${warnings ? 'on' : ''}`}>{warnings} warning{warnings === 1 ? '' : 's'}</span>
+                {!errors && result?.ok && <span className="diag-ok">✓ type-checked · lowered · {optimize ? 'optimized' : 'unoptimized'} · WGSL + SPIR-V emitted</span>}
+              </div>
+              {diagnostics.length > 0 && (
+                <ul className="diag-list">
+                  {diagnostics.map((d, i) => (
+                    <li key={i} className={`diag diag-${d.severity}`} onClick={() => jumpTo(d)}>
+                      <span className="diag-loc">{d.line}:{d.col}</span>
+                      <span className="diag-msg">{d.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+
+          {/* ── Preview + inspector ────────────────────────────────── */}
+          <div className="right-col">
+            <section className="panel preview-panel">
+              <Preview
+                wgsl={view?.wgsl.code ?? null}
+                entry={fragmentEntry}
+                uniforms={view?.reflection.uniforms ?? EMPTY}
+                uniformSize={view?.reflection.uniformSize ?? 0}
+                onShaderErrors={onShaderErrors}
+              />
+            </section>
+
+            <section className="panel inspector">
+              <div className="stage-tabs" role="tablist">
+                {tabs.map((t, i) => (
+                  <button key={t.id} role="tab" className={`stage-tab ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
+                    {i > 0 && <span className="stage-arrow" aria-hidden>›</span>}
+                    <span className="stage-label">{t.label}</span>
+                    <span className="stage-stat">{t.stat}</span>
+                    {t.changes && (t.changes.added + t.changes.removed > 0) && (
+                      <span key={changeKey} className="stage-delta" title="lines changed by your last edit">
+                        +{t.changes.added} −{t.changes.removed}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              <div className="inspector-body">
+                {!wasm && <div className="placeholder">{wasmError ?? 'Loading the compiler…'}</div>}
+                {wasm && stale && (tab === 'wgsl' || tab === 'spirv' || tab === 'ir') && (
+                  <div className="stale-banner">Showing the last successful build — fix {errors} error{errors === 1 ? '' : 's'} to update.</div>
+                )}
+
+                {wasm && (tab === 'wgsl' || tab === 'spirv') && view && (
+                  <>
+                    <div className="subbar">
+                      <div className="seg">
+                        <button className={!showDiff ? 'active' : ''} onClick={() => setShowDiff(false)}>Output</button>
+                        <button className={showDiff ? 'active' : ''} onClick={() => setShowDiff(true)} disabled={!prevOk}>Δ since last edit</button>
+                      </div>
+                      <span className="subbar-stat dim">hover a line to find its source · move the cursor to find its output</span>
+                      <button className="ghost-btn" onClick={() => tab === 'wgsl'
+                        ? download('shader.wgsl', view.wgsl.code ?? '', 'text/plain')
+                        : download('shader.spv', new Uint32Array(view.spirv.words ?? []), 'application/octet-stream')}>
+                        Download .{tab === 'wgsl' ? 'wgsl' : 'spv'}
+                      </button>
+                    </div>
+                    {showDiff && prevOk ? (
+                      <DiffView
+                        before={(tab === 'wgsl' ? prevOk.wgsl.code : prevOk.spirv.text) ?? ''}
+                        after={(tab === 'wgsl' ? view.wgsl.code : view.spirv.text) ?? ''}
+                        lang={tab}
+                      />
+                    ) : tab === 'wgsl' ? (
+                      <CodeView text={view.wgsl.code ?? ''} lang="wgsl" map={view.wgsl.map} changed={wgslChanges.changed} {...common} />
+                    ) : (
+                      <CodeView text={view.spirv.text ?? ''} lang="spirv" map={view.spirv.map} changed={spirvChanges.changed} {...common} />
+                    )}
+                  </>
+                )}
+
+                {wasm && tab === 'ir' && view && (
+                  <IrPanel
+                    result={view}
+                    optimize={optimize}
+                    disabled={disabled}
+                    onToggleOptimize={() => setOptimize(o => !o)}
+                    onTogglePass={name => setDisabled(d => d.includes(name) ? d.filter(x => x !== name) : [...d, name])}
+                    changed={irChanges.changed}
+                    {...common}
+                  />
+                )}
+
+                {wasm && tab === 'ast' && (result?.ast
+                  ? <AstGraph ast={result.ast} linkedSrc={linked} onHoverSrc={setHoverSrc} onPickSrc={pickSrc} />
+                  : <div className="placeholder">Fix the syntax error to see the tree.</div>)}
+
+                {wasm && tab === 'tokens' && result && (
+                  <div className="token-scroll">
+                    <table className="token-table">
+                      <thead><tr><th>Line:Col</th><th>Kind</th><th>Lexeme</th></tr></thead>
+                      <tbody>
+                        {result.tokens.map((t, i) => (
+                          <tr key={i} className={linked === t.line ? 'linked' : ''} onMouseEnter={() => setHoverSrc(t.line)}
+                            onMouseLeave={() => setHoverSrc(null)} onClick={() => pickSrc(t.line)}>
+                            <td className="num">{t.line}:{t.col}</td>
+                            <td className={`tok tok-${tokenClass(t.type)}`}>{t.type}</td>
+                            <td className="lex">{t.lexeme}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {view && (
+                <div className="timing-bar" title="time per compiler stage, in the browser">
+                  {result?.timings.map(t => (
+                    <span key={t.stage} className="timing"
+                      style={{ '--share': `${Math.round((t.ms / Math.max(compileMs, 0.001)) * 100)}%` } as React.CSSProperties}>
+                      <span className="timing-name">{t.stage}</span>
+                      <span className="timing-ms">{t.ms < 1 ? t.ms.toFixed(2) : t.ms.toFixed(1)} ms</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        </main>
+      )}
     </div>
   );
+}
+
+const EMPTY: never[] = [];
+
+function tokenClass(type: string) {
+  if (type.startsWith('KW_')) return 'kw';
+  if (type === 'TYPE') return 'type';
+  if (type.endsWith('_LIT')) return 'lit';
+  if (type === 'IDENTIFIER') return 'ident';
+  return 'punct';
 }
