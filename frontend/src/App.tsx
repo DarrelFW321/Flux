@@ -233,25 +233,12 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-logo" aria-hidden>
-            <svg viewBox="0 0 24 24" width="18" height="18"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#a78bfa" /><stop offset="1" stopColor="#22d3ee" /></linearGradient></defs><path d="M4 20 L12 4 L20 20 Z" fill="none" stroke="url(#g)" strokeWidth="2.2" strokeLinejoin="round" /><circle cx="12" cy="14" r="2.4" fill="url(#g)" /></svg>
-          </span>
-          <span className="brand-name">flux</span>
-          <span className="brand-tag">shader compiler</span>
-        </div>
+        <span className="brand">flux</span>
         <nav className="topnav">
           <button className={page === 'playground' ? 'active' : ''} onClick={() => setPage('playground')}>Playground</button>
           <button className={page === 'docs' ? 'active' : ''} onClick={() => setPage('docs')}>Reference</button>
         </nav>
-        <div className="topbar-right">
-          <span className={`pill ${wasm ? 'ok' : wasmError ? 'bad' : 'wait'}`}>
-            <span className="dot" />{wasm ? `wasm · ${compileMs.toFixed(1)} ms` : wasmError ? 'wasm missing' : 'loading wasm'}
-          </span>
-          <a className="gh" href="https://github.com/DarrelFW321/flux" target="_blank" rel="noopener noreferrer" aria-label="GitHub">
-            <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" /></svg>
-          </a>
-        </div>
+        <a className="toplink" href="https://github.com/DarrelFW321/flux" target="_blank" rel="noopener noreferrer">GitHub</a>
       </header>
 
       {page === 'docs' ? <DocsPane /> : (
@@ -278,7 +265,7 @@ export default function App() {
                 options={{
                   fontSize: 13,
                   fontFamily: "'JetBrains Mono', 'Cascadia Code', monospace",
-                  fontLigatures: true,
+                  fontLigatures: false,
                   minimap: { enabled: false },
                   scrollBeyondLastLine: false,
                   padding: { top: 14, bottom: 14 },
@@ -297,7 +284,7 @@ export default function App() {
               <div className="diag-head">
                 <span className={`diag-count err ${errors ? 'on' : ''}`}>{errors} error{errors === 1 ? '' : 's'}</span>
                 <span className={`diag-count warn ${warnings ? 'on' : ''}`}>{warnings} warning{warnings === 1 ? '' : 's'}</span>
-                {!errors && result?.ok && <span className="diag-ok">✓ type-checked · lowered · {optimize ? 'optimized' : 'unoptimized'} · WGSL + SPIR-V emitted</span>}
+                {!errors && !warnings && result?.ok && <span className="diag-ok">No problems</span>}
               </div>
               {diagnostics.length > 0 && (
                 <ul className="diag-list">
@@ -326,13 +313,12 @@ export default function App() {
 
             <section className="panel inspector">
               <div className="stage-tabs" role="tablist">
-                {tabs.map((t, i) => (
+                {tabs.map(t => (
                   <button key={t.id} role="tab" className={`stage-tab ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
-                    {i > 0 && <span className="stage-arrow" aria-hidden>›</span>}
                     <span className="stage-label">{t.label}</span>
                     <span className="stage-stat">{t.stat}</span>
                     {t.changes && (t.changes.added + t.changes.removed > 0) && (
-                      <span key={changeKey} className="stage-delta" title="lines changed by your last edit">
+                      <span className="stage-delta" title="lines changed by your last edit">
                         +{t.changes.added} −{t.changes.removed}
                       </span>
                     )}
@@ -343,7 +329,7 @@ export default function App() {
               <div className="inspector-body">
                 {!wasm && <div className="placeholder">{wasmError ?? 'Loading the compiler…'}</div>}
                 {wasm && stale && (tab === 'wgsl' || tab === 'spirv' || tab === 'ir') && (
-                  <div className="stale-banner">Showing the last successful build — fix {errors} error{errors === 1 ? '' : 's'} to update.</div>
+                  <div className="stale-banner">Out of date: showing the last build without errors.</div>
                 )}
 
                 {wasm && (tab === 'wgsl' || tab === 'spirv') && view && (
@@ -351,13 +337,13 @@ export default function App() {
                     <div className="subbar">
                       <div className="seg">
                         <button className={!showDiff ? 'active' : ''} onClick={() => setShowDiff(false)}>Output</button>
-                        <button className={showDiff ? 'active' : ''} onClick={() => setShowDiff(true)} disabled={!prevOk}>Δ since last edit</button>
+                        <button className={showDiff ? 'active' : ''} onClick={() => setShowDiff(true)} disabled={!prevOk} title="Compare with the output before your last edit">Diff</button>
                       </div>
-                      <span className="subbar-stat dim">hover a line to find its source · move the cursor to find its output</span>
+                      <span className="subbar-fill" />
                       <button className="ghost-btn" onClick={() => tab === 'wgsl'
                         ? download('shader.wgsl', view.wgsl.code ?? '', 'text/plain')
                         : download('shader.spv', new Uint32Array(view.spirv.words ?? []), 'application/octet-stream')}>
-                        Download .{tab === 'wgsl' ? 'wgsl' : 'spv'}
+                        Download
                       </button>
                     </div>
                     {showDiff && prevOk ? (
@@ -409,21 +395,20 @@ export default function App() {
                 )}
               </div>
 
-              {view && (
-                <div className="timing-bar" title="time per compiler stage, in the browser">
-                  {result?.timings.map(t => (
-                    <span key={t.stage} className="timing"
-                      style={{ '--share': `${Math.round((t.ms / Math.max(compileMs, 0.001)) * 100)}%` } as React.CSSProperties}>
-                      <span className="timing-name">{t.stage}</span>
-                      <span className="timing-ms">{t.ms < 1 ? t.ms.toFixed(2) : t.ms.toFixed(1)} ms</span>
-                    </span>
-                  ))}
-                </div>
-              )}
             </section>
           </div>
         </main>
       )}
+
+      <footer className="statusbar">
+        <span>{wasm ? 'fluxc (wasm)' : wasmError ? wasmError : 'Loading compiler…'}</span>
+        {wasm && result && (
+          <span className="status-timings" title="Time per compiler stage, measured in the browser">
+            {result.timings.map(t => `${t.stage} ${t.ms < 1 ? t.ms.toFixed(2) : t.ms.toFixed(1)}`).join('  ·  ')}
+          </span>
+        )}
+        {wasm && result && <span className="status-total">{compileMs.toFixed(1)} ms</span>}
+      </footer>
     </div>
   );
 }

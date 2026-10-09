@@ -118,7 +118,6 @@ export function Preview({ wgsl, entry, uniforms, uniformSize, onShaderErrors }: 
   }, []);
 
   const custom_uniforms = uniforms.filter(u => !isAuto(u));
-  const auto_uniforms = uniforms.filter(isAuto);
 
   return (
     <div className="preview">
@@ -156,15 +155,12 @@ export function Preview({ wgsl, entry, uniforms, uniformSize, onShaderErrors }: 
           </button>
           <span className="hud-stat">{fps} fps</span>
           <span className="hud-stat dim">{size[0]}×{size[1]}</span>
-          {auto_uniforms.map(u => (
-            <span key={u.name} className="hud-uniform" title={`${u.name}: ${AUTO_UNIFORMS[u.name]}`}>{u.name}</span>
-          ))}
         </div>
       </div>
 
       {custom_uniforms.length > 0 && (
         <div className="uniform-panel">
-          <div className="uniform-title">uniforms</div>
+          <div className="uniform-title">Uniforms</div>
           {custom_uniforms.map(u => (
             <UniformControl
               key={u.name}

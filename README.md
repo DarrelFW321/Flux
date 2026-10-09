@@ -15,7 +15,7 @@ Flux compiles shaders through its own SSA intermediate representation, runs a se
 </p>
 
 <p align="center">
-  <img src="docs/media/demo.gif" alt="Editing a Flux shader in the playground: the WebGPU preview, diagnostics, WGSL, SPIR-V and IR update live" width="880" />
+  <img src="docs/media/demo.gif" alt="Editing a Flux shader in the playground: the WebGPU preview, diagnostics, WGSL, SPIR-V and IR update live" width="100%" />
 </p>
 
 ```flux
@@ -55,7 +55,7 @@ fn main(@builtin(position) frag: vec4) -> vec4 {
 - **Live diagnostics.** Compiler errors and warnings appear as you type (with the last good build still rendering), and any WGSL validation error from WebGPU is mapped back to the Flux line.
 
 <p align="center">
-  <img src="docs/media/playground.png" alt="The Flux playground showing the raymarching example" width="880" />
+  <img src="docs/media/playground.png" alt="The Flux playground showing the raymarching example" width="100%" />
 </p>
 
 ---

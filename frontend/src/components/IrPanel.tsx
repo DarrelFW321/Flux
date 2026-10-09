@@ -36,7 +36,7 @@ export function IrPanel(props: IrPanelProps) {
         <div className="seg">
           {(['final', 'lowered', 'passes'] as Mode[]).map(m => (
             <button key={m} className={mode === m ? 'active' : ''} onClick={() => setMode(m)}>
-              {m === 'final' ? 'Optimized' : m === 'lowered' ? 'Lowered' : 'Pass by pass'}
+              {m === 'final' ? 'Final' : m === 'lowered' ? 'Lowered' : 'Passes'}
             </button>
           ))}
         </div>
@@ -47,19 +47,19 @@ export function IrPanel(props: IrPanelProps) {
       </div>
 
       <div className="pass-switches">
-        <button className={`pass-switch master ${optimize ? 'on' : ''}`} onClick={props.onToggleOptimize}
-          title="Toggle the whole optimization pipeline (-O0)">
-          {optimize ? 'optimizer on' : 'optimizer off (-O0)'}
-        </button>
+        <label className="pass-switch master" title="Run the optimization pipeline (off = -O0)">
+          <input type="checkbox" checked={optimize} onChange={props.onToggleOptimize} />
+          Optimize
+        </label>
         {result.passes.available.map(p => {
           const on = optimize && !disabled.includes(p.name);
           const n = totals.find(t => t.name === p.name)?.changes ?? 0;
           return (
-            <button key={p.name} className={`pass-switch ${on ? 'on' : ''}`} disabled={!optimize}
-              onClick={() => props.onTogglePass(p.name)} title={p.description}>
+            <label key={p.name} className={`pass-switch ${optimize ? '' : 'off'}`} title={p.description}>
+              <input type="checkbox" checked={on} disabled={!optimize} onChange={() => props.onTogglePass(p.name)} />
               {p.name}
-              {on && <span className={`pass-count ${n ? 'hot' : ''}`}>{n}</span>}
-            </button>
+              {on && n > 0 && <span className="pass-count">{n}</span>}
+            </label>
           );
         })}
       </div>
@@ -105,7 +105,7 @@ function PassDiff({ raw, steps, index }: { raw: string; steps: CompileResult['pa
   return (
     <>
       <div className="pass-caption">
-        <strong>{steps[index].pass}</strong> <span className="dim">— {description}</span>
+        <strong>{steps[index].pass}</strong> <span className="dim">{description}</span>
       </div>
       <DiffView before={before} after={after} lang="ir" />
     </>
