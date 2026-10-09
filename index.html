@@ -3,17 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Flux</title>
+    <title>Flux — shader compiler playground</title>
     <meta
       name="description"
-      content="Explore the Flux compiler in your browser: live tokens, AST, MIR, LLVM IR, run code, and benchmark kernels against C and NumPy."
+      content="Flux is a statically typed shading language. Edit shaders in the browser, preview them live with WebGPU, and watch the compiler turn them into FluxIR, WGSL and SPIR-V."
     />
-    <meta name="theme-color" content="#09090b" />
+    <meta name="theme-color" content="#07080c" />
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="Flux — Compiler Visualizer" />
+    <meta property="og:title" content="Flux — shader compiler playground" />
     <meta
       property="og:description"
-      content="A small language for numerical kernels, with an interactive pipeline from source to native code."
+      content="A C++ shader compiler running in WebAssembly: live WebGPU preview, diagnostics, and a pass-by-pass view of the IR, WGSL and SPIR-V."
     />
     <meta property="og:url" content="https://darrelfw321.github.io/Flux/" />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
@@ -21,12 +21,12 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
     />
-    <!-- Emscripten-generated WASM glue; built by CI and placed in public/ -->
+    <!-- Emscripten-generated compiler; built by CI (or locally, see docs/BUILD.md) into public/ -->
     <script src="./flux_wasm.js"></script>
-    <script type="module" crossorigin src="./assets/index-C-iE33U1.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-_CWjD1ha.css">
+    <script type="module" crossorigin src="./assets/index-BrvHO7GL.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CjyU2orY.css">
   </head>
   <body>
     <div id="root"></div>
